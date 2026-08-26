@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId = "com.finevolume"
         minSdk = 30
-        targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.1"
+        targetSdk = 28
+        versionCode = 5
+        versionName = "0.2.2"
     }
 
     compileOptions {
