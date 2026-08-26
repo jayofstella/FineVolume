@@ -5,29 +5,24 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.audiofx.AudioEffect
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import java.lang.reflect.InvocationTargetException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.UUID
-import kotlin.math.pow
+import rikka.shizuku.Shizuku
 
 class MainActivity : Activity() {
     private lateinit var audio: AudioManager
     private lateinit var status: TextView
-    private var volumeEffect: AudioEffect? = null
-    private var commandMethod: java.lang.reflect.Method? = null
-    private var currentDb: Float = 0f
 
-    companion object {
-        private val VOLUME_IMPL_UUID: UUID = UUID.fromString("119341a0-8469-11df-81f9-0002a5d5c51b")
-        private const val EFFECT_CMD_SET_VOLUME = 10
+    private val binderReceived = Shizuku.OnBinderReceivedListener { refresh("Shizuku Binder 已连接") }
+    private val binderDead = Shizuku.OnBinderDeadListener { refresh("Shizuku Binder 已断开") }
+    private val permissionResult = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+        if (requestCode == 1001) {
+            refresh(if (grantResult == PackageManager.PERMISSION_GRANTED) "FineVolume 已获得 Shizuku 授权" else "Shizuku 授权被拒绝")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,24 +30,16 @@ class MainActivity : Activity() {
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
         buildUi()
         requestBluetoothPermissionIfNeeded()
-        refresh("等待测试")
+        Shizuku.addBinderReceivedListenerSticky(binderReceived)
+        Shizuku.addBinderDeadListener(binderDead)
+        Shizuku.addRequestPermissionResultListener(permissionResult)
+        refresh("等待 Shizuku 检测")
     }
 
     private fun requestBluetoothPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 10)
         }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 10) refresh("蓝牙权限已更新")
     }
 
     private fun buildUi() {
@@ -63,13 +50,13 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.2.2 Experimental"
-            textSize = 26f
+            text = "FineVolume v0.3.0"
+            textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "AOSP / NXP Volume Command 实验 · 无 Root"
+            text = "Shizuku / AVRCP Absolute Volume 能力探测版"
             textSize = 15f
-            setPadding(0, 6, 0, 20)
+            setPadding(0, 6, 0, 22)
         })
 
         status = TextView(this).apply {
@@ -79,49 +66,41 @@ class MainActivity : Activity() {
         root.addView(status)
 
         root.addView(Button(this).apply {
-            text = "① 初始化 session 0 Volume Effect"
-            setOnClickListener { initializeVolumeEffect() }
-        })
-
-        root.addView(TextView(this).apply {
-            text = "\n实际衰减测试（建议系统音量 6～8/15）"
-            textSize = 20f
-        })
-
-        listOf(-3f, -6f, -12f, -18f).forEach { db ->
-            root.addView(Button(this).apply {
-                text = "设置 ${db.toInt()} dB"
-                setOnClickListener { sendVolumeCommand(db) }
-            })
-        }
-
-        root.addView(Button(this).apply {
-            text = "恢复 0 dB"
-            setOnClickListener { sendVolumeCommand(0f) }
+            text = "① 检查 Shizuku 状态"
+            setOnClickListener { refresh("状态已刷新") }
         })
 
         root.addView(Button(this).apply {
-            text = "紧急关闭 / 释放 Effect"
+            text = "② 请求 FineVolume 的 Shizuku 授权"
             setOnClickListener {
-                emergencyRelease()
-                refresh("已关闭并释放 Volume Effect")
+                try {
+                    if (!Shizuku.pingBinder()) {
+                        refresh("Shizuku 尚未运行或 Binder 未连接")
+                    } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                        refresh("FineVolume 已经拥有 Shizuku 授权")
+                    } else {
+                        Shizuku.requestPermission(1001)
+                        refresh("已发起 Shizuku 授权请求，请在弹窗中允许")
+                    }
+                } catch (e: Throwable) {
+                    refresh("请求 Shizuku 授权失败：${e.javaClass.simpleName}: ${e.message}")
+                }
             }
         })
 
         root.addView(Button(this).apply {
-            text = "刷新蓝牙与系统状态"
-            setOnClickListener { refresh("状态已刷新") }
+            text = "③ 检测 AVRCP 所需系统权限"
+            setOnClickListener { probeRemotePermissions() }
         })
 
         root.addView(TextView(this).apply {
-            text = "\n测试步骤：\n" +
-                "1. 连接蓝牙耳机并持续播放熟悉的音乐。\n" +
-                "2. 系统音量建议使用 6～8/15，便于听出差异。\n" +
-                "3. 先点击①初始化。只有状态显示 CREATE=SUCCESS、command API=AVAILABLE 后再继续。\n" +
-                "4. 先点 -3 dB；若音量明显下降，再试 -6/-12 dB。\n" +
-                "5. 若出现异常，立即点“紧急关闭”。\n\n" +
-                "技术说明：该 NXP Volume 实际是 AOSP LVM Volume Effect。源码表明它接收 EFFECT_CMD_SET_VOLUME，而不是普通 setParameter。\n" +
-                "本版通过 Android 隐藏的 AudioEffect.command() 发送标准 Volume 命令；不写任何未知私有参数。"
+            text = "\n本版不会改变蓝牙耳机音量。它只判断无 Root 的 Shizuku/ADB 路线是否具备调用 Android 15 隐藏 AVRCP 绝对音量接口的权限。\n\n" +
+                "使用方法：\n" +
+                "1. 先安装并启动 Shizuku。\n" +
+                "2. Android 11+ 可在 Shizuku 中通过“无线调试”启动，不需要电脑，也不需要 Root。\n" +
+                "3. 回到 FineVolume，依次点击①、②、③。\n" +
+                "4. 把完整结果截图发回。\n\n" +
+                "关键判断：Android 15 的 BluetoothA2dp.setAvrcpAbsoluteVolume() 需要 BLUETOOTH_CONNECT 与 BLUETOOTH_PRIVILEGED。若 Shizuku 的 shell 身份没有 BLUETOOTH_PRIVILEGED，则普通 Shizuku/ADB 路线不能直接调用该接口。"
             textSize = 14f
         })
 
@@ -129,153 +108,73 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
-    private fun initializeVolumeEffect() {
-        emergencyRelease()
+    private fun probeRemotePermissions() {
         val log = StringBuilder()
         try {
-            val descriptor = (AudioEffect.queryEffects() ?: emptyArray()).firstOrNull {
-                it.uuid == VOLUME_IMPL_UUID ||
-                    (it.name.equals("Volume", true) && it.implementor.contains("NXP", true))
+            if (!Shizuku.pingBinder()) {
+                refresh("无法探测：Shizuku 未运行")
+                return
             }
-            if (descriptor == null) {
-                refresh("NXP/AOSP Volume descriptor NOT FOUND")
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                refresh("无法探测：FineVolume 尚未获得 Shizuku 授权")
                 return
             }
 
-            log.append("descriptor=${descriptor.name} / ${descriptor.implementor}\n")
-            log.append("type=${descriptor.type}\n")
-            log.append("uuid=${descriptor.uuid}\n")
+            val connect = Shizuku.checkRemotePermission(Manifest.permission.BLUETOOTH_CONNECT)
+            val privileged = Shizuku.checkRemotePermission("android.permission.BLUETOOTH_PRIVILEGED")
+            val modifyAudio = Shizuku.checkRemotePermission(Manifest.permission.MODIFY_AUDIO_SETTINGS)
 
-            val ctor = AudioEffect::class.java.getDeclaredConstructor(
-                UUID::class.java,
-                UUID::class.java,
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType
-            ).also { it.isAccessible = true }
+            log.append("===== REMOTE PERMISSION PROBE =====\n")
+            log.append("Shizuku UID=${Shizuku.getUid()}\n")
+            log.append("SELinux=${Shizuku.getSELinuxContext()}\n")
+            log.append("BLUETOOTH_CONNECT=${permText(connect)}\n")
+            log.append("BLUETOOTH_PRIVILEGED=${permText(privileged)}\n")
+            log.append("MODIFY_AUDIO_SETTINGS=${permText(modifyAudio)}\n\n")
 
-            val fx = ctor.newInstance(descriptor.type, descriptor.uuid, 1000, 0) as AudioEffect
-            volumeEffect = fx
-            log.append("CREATE session0=SUCCESS id=${fx.id} hasControl=${fx.hasControl()}\n")
-
-            val enabledResult = fx.setEnabled(true)
-            log.append("setEnabled=$enabledResult enabled=${fx.enabled}\n")
-
-            val method = AudioEffect::class.java.getMethod(
-                "command",
-                Int::class.javaPrimitiveType,
-                ByteArray::class.java,
-                ByteArray::class.java
-            )
-            commandMethod = method
-            log.append("hidden command API=AVAILABLE\n")
-            currentDb = 0f
+            if (connect == PackageManager.PERMISSION_GRANTED && privileged == PackageManager.PERMISSION_GRANTED) {
+                log.append("RESULT: PASS\n下一版可以尝试通过 Shizuku UserService 调用 setAvrcpAbsoluteVolume(0..127)。")
+            } else {
+                log.append("RESULT: BLOCKED\nShizuku 当前身份缺少 AVRCP 隐藏接口所需权限；下一步需改走其他无 Root 系统接口/ADB service 路线，而不是直接调用 BluetoothA2dp hidden API。")
+            }
             refresh(log.toString())
         } catch (e: Throwable) {
-            val x = unwrap(e)
-            emergencyRelease()
-            refresh("初始化失败：${x.javaClass.name}: ${x.message}\n$log")
+            refresh("远程权限探测失败：${e.javaClass.name}: ${e.message}")
         }
     }
 
-    private fun sendVolumeCommand(db: Float) {
-        val fx = volumeEffect
-        val method = commandMethod
-        if (fx == null || method == null) {
-            refresh("尚未初始化。请先点击①。")
-            return
-        }
-
-        try {
-            val gain = 10.0.pow(db / 20.0).coerceIn(0.0, 1.0)
-            val q824 = (gain * (1 shl 24)).toLong().coerceIn(0L, 0x1000000L).toInt()
-
-            val cmd = ByteBuffer.allocate(8)
-                .order(ByteOrder.nativeOrder())
-                .putInt(q824)
-                .putInt(q824)
-                .array()
-            val reply = ByteArray(8)
-
-            val result = method.invoke(fx, EFFECT_CMD_SET_VOLUME, cmd, reply) as Int
-            val rb = ByteBuffer.wrap(reply).order(ByteOrder.nativeOrder())
-            val replyL = rb.int
-            val replyR = rb.int
-            currentDb = db
-
-            refresh(
-                "VOLUME COMMAND SENT\n" +
-                    "target=%.1f dB\n".format(db) +
-                    "linear=%.6f  Q8.24=0x%08X\n".format(gain, q824) +
-                    "commandResult=$result\n" +
-                    "replyL=0x%08X replyR=0x%08X\n".format(replyL, replyR) +
-                    "effect hasControl=${fx.hasControl()} enabled=${fx.enabled}\n" +
-                    "请以耳机实际听感为准。"
-            )
-        } catch (e: Throwable) {
-            val x = unwrap(e)
-            refresh("Volume command 失败：${x.javaClass.name}: ${x.message}")
-        }
-    }
+    private fun permText(v: Int): String = if (v == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED"
 
     private fun refresh(message: String) {
         val outputs = try { audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } catch (_: Throwable) { emptyArray() }
         val bt = outputs.filter {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                (Build.VERSION.SDK_INT >= 31 && (
-                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                        it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
-                        it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST
-                    ))
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                (Build.VERSION.SDK_INT >= 31 && (it.type == AudioDeviceInfo.TYPE_BLE_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER || it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST))
         }
-        val btText = if (bt.isEmpty()) "未检测到" else bt.joinToString("\n") {
-            "• ${it.productName} [type=${it.type}, id=${it.id}]"
-        }
+        val btText = if (bt.isEmpty()) "未检测到" else bt.joinToString("\n") { "• ${it.productName} [type=${it.type}, id=${it.id}]" }
         val music = try { audio.getStreamVolume(AudioManager.STREAM_MUSIC) } catch (_: Throwable) { -1 }
         val max = try { audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC) } catch (_: Throwable) { -1 }
-        val fx = volumeEffect
-        val fxState = if (fx == null) "OFF" else try {
-            "READY id=${fx.id}, control=${fx.hasControl()}, enabled=${fx.enabled}, target=${currentDb} dB"
-        } catch (_: Throwable) { "ERROR" }
+
+        val shizukuAlive = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+        val selfPermission = if (shizukuAlive) try { permText(Shizuku.checkSelfPermission()) } catch (_: Throwable) { "ERROR" } else "N/A"
+        val uid = if (shizukuAlive) try { Shizuku.getUid().toString() } catch (_: Throwable) { "ERROR" } else "N/A"
+        val version = if (shizukuAlive) try { Shizuku.getVersion().toString() } catch (_: Throwable) { "ERROR" } else "N/A"
+        val context = if (shizukuAlive) try { Shizuku.getSELinuxContext() ?: "unknown" } catch (_: Throwable) { "ERROR" } else "N/A"
 
         status.text = "蓝牙输出：\n$btText\n\n" +
             "系统媒体音量：$music / $max\n" +
-            "Android：${Build.VERSION.RELEASE} API ${Build.VERSION.SDK_INT}\n" +
-            "targetSdk：${applicationInfo.targetSdkVersion}\n" +
-            "Volume Effect：$fxState\n\n" +
+            "Android：${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n\n" +
+            "Shizuku Binder：${if (shizukuAlive) "CONNECTED" else "NOT CONNECTED"}\n" +
+            "Shizuku API version：$version\n" +
+            "Shizuku UID：$uid\n" +
+            "Shizuku SELinux：$context\n" +
+            "FineVolume Shizuku permission：$selfPermission\n\n" +
             "状态：\n$message\n"
     }
 
-    private fun emergencyRelease() {
-        volumeEffect?.let { fx ->
-            try {
-                val method = commandMethod ?: AudioEffect::class.java.getMethod(
-                    "command",
-                    Int::class.javaPrimitiveType,
-                    ByteArray::class.java,
-                    ByteArray::class.java
-                )
-                val unity = 1 shl 24
-                val cmd = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder())
-                    .putInt(unity).putInt(unity).array()
-                try { method.invoke(fx, EFFECT_CMD_SET_VOLUME, cmd, ByteArray(8)) } catch (_: Throwable) {}
-            } catch (_: Throwable) {}
-            try { fx.setEnabled(false) } catch (_: Throwable) {}
-            try { fx.release() } catch (_: Throwable) {}
-        }
-        volumeEffect = null
-        commandMethod = null
-        currentDb = 0f
-    }
-
-    private fun unwrap(t: Throwable): Throwable {
-        var x = t
-        if (x is InvocationTargetException && x.targetException != null) x = x.targetException
-        return x
-    }
-
     override fun onDestroy() {
-        emergencyRelease()
+        Shizuku.removeBinderReceivedListener(binderReceived)
+        Shizuku.removeBinderDeadListener(binderDead)
+        Shizuku.removeRequestPermissionResultListener(permissionResult)
         super.onDestroy()
     }
 }
