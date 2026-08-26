@@ -1,11 +1,7 @@
 package com.finevolume
 
-import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
-import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
@@ -14,32 +10,31 @@ import android.widget.TextView
 import rikka.shizuku.Shizuku
 
 class MainActivity : Activity() {
-    private lateinit var audio: AudioManager
     private lateinit var status: TextView
 
-    private val binderReceived = Shizuku.OnBinderReceivedListener { refresh("Shizuku Binder 已连接") }
-    private val binderDead = Shizuku.OnBinderDeadListener { refresh("Shizuku Binder 已断开") }
+    private val binderReceived = Shizuku.OnBinderReceivedListener {
+        refresh("Binder 已连接")
+    }
+    private val binderDead = Shizuku.OnBinderDeadListener {
+        refresh("Binder 已断开")
+    }
     private val permissionResult = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
-        if (requestCode == 1001) {
-            refresh(if (grantResult == PackageManager.PERMISSION_GRANTED) "FineVolume 已获得 Shizuku 授权" else "Shizuku 授权被拒绝")
+        if (requestCode == 3101) {
+            refresh(
+                if (grantResult == PackageManager.PERMISSION_GRANTED)
+                    "授权回调：GRANTED"
+                else "授权回调：DENIED"
+            )
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        audio = getSystemService(AUDIO_SERVICE) as AudioManager
         buildUi()
-        requestBluetoothPermissionIfNeeded()
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
         Shizuku.addRequestPermissionResultListener(permissionResult)
-        refresh("等待 Shizuku 检测")
-    }
-
-    private fun requestBluetoothPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 10)
-        }
+        refresh("最小诊断版已启动；尚未请求任何远程权限")
     }
 
     private fun buildUi() {
@@ -50,13 +45,13 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.3.0"
+            text = "FineVolume v0.3.1"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "Shizuku / AVRCP Absolute Volume 能力探测版"
-            textSize = 15f
-            setPadding(0, 6, 0, 22)
+            text = "Shizuku 最小兼容性诊断版"
+            textSize = 16f
+            setPadding(0, 6, 0, 24)
         })
 
         status = TextView(this).apply {
@@ -66,41 +61,35 @@ class MainActivity : Activity() {
         root.addView(status)
 
         root.addView(Button(this).apply {
-            text = "① 检查 Shizuku 状态"
-            setOnClickListener { refresh("状态已刷新") }
+            text = "① 只检查 Shizuku Binder"
+            setOnClickListener { refresh("仅刷新 Binder 状态") }
         })
 
         root.addView(Button(this).apply {
-            text = "② 请求 FineVolume 的 Shizuku 授权"
+            text = "② 读取当前授权状态（不发起授权）"
             setOnClickListener {
-                try {
-                    if (!Shizuku.pingBinder()) {
-                        refresh("Shizuku 尚未运行或 Binder 未连接")
-                    } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                        refresh("FineVolume 已经拥有 Shizuku 授权")
-                    } else {
-                        Shizuku.requestPermission(1001)
-                        refresh("已发起 Shizuku 授权请求，请在弹窗中允许")
-                    }
-                } catch (e: Throwable) {
-                    refresh("请求 Shizuku 授权失败：${e.javaClass.simpleName}: ${e.message}")
+                if (!safePing()) {
+                    refresh("Shizuku 未运行 / Binder 未连接")
+                } else {
+                    val p = try { Shizuku.checkSelfPermission() } catch (e: Throwable) { Int.MIN_VALUE }
+                    refresh("当前授权状态：${permText(p)}；本操作没有发起授权请求")
                 }
             }
         })
 
         root.addView(Button(this).apply {
-            text = "③ 检测 AVRCP 所需系统权限"
-            setOnClickListener { probeRemotePermissions() }
+            text = "③ 最小化请求 Shizuku 授权"
+            setOnClickListener { requestShizukuPermissionMinimal() }
         })
 
         root.addView(TextView(this).apply {
-            text = "\n本版不会改变蓝牙耳机音量。它只判断无 Root 的 Shizuku/ADB 路线是否具备调用 Android 15 隐藏 AVRCP 绝对音量接口的权限。\n\n" +
-                "使用方法：\n" +
-                "1. 先安装并启动 Shizuku。\n" +
-                "2. Android 11+ 可在 Shizuku 中通过“无线调试”启动，不需要电脑，也不需要 Root。\n" +
-                "3. 回到 FineVolume，依次点击①、②、③。\n" +
-                "4. 把完整结果截图发回。\n\n" +
-                "关键判断：Android 15 的 BluetoothA2dp.setAvrcpAbsoluteVolume() 需要 BLUETOOTH_CONNECT 与 BLUETOOTH_PRIVILEGED。若 Shizuku 的 shell 身份没有 BLUETOOTH_PRIVILEGED，则普通 Shizuku/ADB 路线不能直接调用该接口。"
+            text = "\n本版已经移除：AVRCP、蓝牙隐藏接口、checkRemotePermission、UserService 和所有音频控制代码。\n\n" +
+                "测试顺序：\n" +
+                "1. 在 Shizuku 中通过无线调试启动服务，确认显示“正在运行”。\n" +
+                "2. 打开 FineVolume，先点①。\n" +
+                "3. 点②，只读取现有授权状态。这个动作不应该停止 Shizuku。\n" +
+                "4. 最后再点③。如果仅点击③就导致 Shizuku 从“正在运行”变为“未运行”，就可以确认问题发生在 OriginOS/Shizuku 的授权事务本身，而不是 AVRCP 或 FineVolume 音频代码。\n\n" +
+                "如果 Shizuku 已在自己的应用列表里给 FineVolume 授权，请先不要反复切换授权，先用①②观察状态。"
             textSize = 14f
         })
 
@@ -108,67 +97,56 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
-    private fun probeRemotePermissions() {
-        val log = StringBuilder()
+    private fun requestShizukuPermissionMinimal() {
         try {
-            if (!Shizuku.pingBinder()) {
-                refresh("无法探测：Shizuku 未运行")
-                return
-            }
-            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                refresh("无法探测：FineVolume 尚未获得 Shizuku 授权")
+            if (!safePing()) {
+                refresh("无法请求：Shizuku 未运行 / Binder 未连接")
                 return
             }
 
-            val connect = Shizuku.checkRemotePermission(Manifest.permission.BLUETOOTH_CONNECT)
-            val privileged = Shizuku.checkRemotePermission("android.permission.BLUETOOTH_PRIVILEGED")
-            val modifyAudio = Shizuku.checkRemotePermission(Manifest.permission.MODIFY_AUDIO_SETTINGS)
-
-            log.append("===== REMOTE PERMISSION PROBE =====\n")
-            log.append("Shizuku UID=${Shizuku.getUid()}\n")
-            log.append("SELinux=${Shizuku.getSELinuxContext()}\n")
-            log.append("BLUETOOTH_CONNECT=${permText(connect)}\n")
-            log.append("BLUETOOTH_PRIVILEGED=${permText(privileged)}\n")
-            log.append("MODIFY_AUDIO_SETTINGS=${permText(modifyAudio)}\n\n")
-
-            if (connect == PackageManager.PERMISSION_GRANTED && privileged == PackageManager.PERMISSION_GRANTED) {
-                log.append("RESULT: PASS\n下一版可以尝试通过 Shizuku UserService 调用 setAvrcpAbsoluteVolume(0..127)。")
-            } else {
-                log.append("RESULT: BLOCKED\nShizuku 当前身份缺少 AVRCP 隐藏接口所需权限；下一步需改走其他无 Root 系统接口/ADB service 路线，而不是直接调用 BluetoothA2dp hidden API。")
+            val current = Shizuku.checkSelfPermission()
+            if (current == PackageManager.PERMISSION_GRANTED) {
+                refresh("FineVolume 已经获得 Shizuku 授权，无需再次请求")
+                return
             }
-            refresh(log.toString())
+
+            if (Shizuku.shouldShowRequestPermissionRationale()) {
+                refresh("Shizuku 报告应显示权限说明；为避免反复触发，本版暂不强制请求")
+                return
+            }
+
+            status.text = buildState("即将调用唯一一次 Shizuku.requestPermission(3101)…")
+            Shizuku.requestPermission(3101)
         } catch (e: Throwable) {
-            refresh("远程权限探测失败：${e.javaClass.name}: ${e.message}")
+            refresh("最小授权请求异常：${e.javaClass.name}: ${e.message}")
         }
     }
 
-    private fun permText(v: Int): String = if (v == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED"
+    private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
 
-    private fun refresh(message: String) {
-        val outputs = try { audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS) } catch (_: Throwable) { emptyArray() }
-        val bt = outputs.filter {
-            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                (Build.VERSION.SDK_INT >= 31 && (it.type == AudioDeviceInfo.TYPE_BLE_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER || it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST))
-        }
-        val btText = if (bt.isEmpty()) "未检测到" else bt.joinToString("\n") { "• ${it.productName} [type=${it.type}, id=${it.id}]" }
-        val music = try { audio.getStreamVolume(AudioManager.STREAM_MUSIC) } catch (_: Throwable) { -1 }
-        val max = try { audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC) } catch (_: Throwable) { -1 }
+    private fun buildState(message: String): String {
+        val alive = safePing()
+        val version = if (alive) try { Shizuku.getVersion().toString() } catch (_: Throwable) { "ERR" } else "N/A"
+        val uid = if (alive) try { Shizuku.getUid().toString() } catch (_: Throwable) { "ERR" } else "N/A"
+        val permission = if (alive) {
+            try { permText(Shizuku.checkSelfPermission()) } catch (_: Throwable) { "ERR" }
+        } else "N/A"
 
-        val shizukuAlive = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
-        val selfPermission = if (shizukuAlive) try { permText(Shizuku.checkSelfPermission()) } catch (_: Throwable) { "ERROR" } else "N/A"
-        val uid = if (shizukuAlive) try { Shizuku.getUid().toString() } catch (_: Throwable) { "ERROR" } else "N/A"
-        val version = if (shizukuAlive) try { Shizuku.getVersion().toString() } catch (_: Throwable) { "ERROR" } else "N/A"
-        val context = if (shizukuAlive) try { Shizuku.getSELinuxContext() ?: "unknown" } catch (_: Throwable) { "ERROR" } else "N/A"
-
-        status.text = "蓝牙输出：\n$btText\n\n" +
-            "系统媒体音量：$music / $max\n" +
-            "Android：${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n\n" +
-            "Shizuku Binder：${if (shizukuAlive) "CONNECTED" else "NOT CONNECTED"}\n" +
+        return "Shizuku Binder：${if (alive) "CONNECTED" else "NOT CONNECTED"}\n" +
             "Shizuku API version：$version\n" +
             "Shizuku UID：$uid\n" +
-            "Shizuku SELinux：$context\n" +
-            "FineVolume Shizuku permission：$selfPermission\n\n" +
-            "状态：\n$message\n"
+            "FineVolume Shizuku permission：$permission\n\n" +
+            "状态：\n$message"
+    }
+
+    private fun refresh(message: String) {
+        status.text = buildState(message)
+    }
+
+    private fun permText(v: Int): String = when (v) {
+        PackageManager.PERMISSION_GRANTED -> "GRANTED"
+        PackageManager.PERMISSION_DENIED -> "DENIED"
+        else -> "UNKNOWN($v)"
     }
 
     override fun onDestroy() {
