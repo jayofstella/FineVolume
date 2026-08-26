@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId = "com.finevolume"
         minSdk = 30
-        targetSdk = 28
-        versionCode = 5
-        versionName = "0.2.2"
+        targetSdk = 35
+        versionCode = 6
+        versionName = "0.3.0"
     }
 
     compileOptions {
@@ -20,7 +20,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }
