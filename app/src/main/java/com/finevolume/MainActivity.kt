@@ -61,14 +61,14 @@ class MainActivity : Activity() {
             setPadding(0, 30, 0, 4)
         }
         val systemBar = SeekBar(this)
-        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        systemBar.max = max
+        val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        systemBar.max = maxVolume
         systemBar.progress = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        systemLabel.text = "系统媒体音量：${systemBar.progress} / $max"
+        systemLabel.text = "系统媒体音量：${systemBar.progress} / $maxVolume"
         systemBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) audio.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0)
-                systemLabel.text = "系统媒体音量：$progress / $max"
+                systemLabel.text = "系统媒体音量：$progress / $maxVolume"
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
             override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
@@ -80,8 +80,8 @@ class MainActivity : Activity() {
             setPadding(0, 30, 0, 4)
         }
         val fineBar = SeekBar(this).apply {
-            max = 400
-            progress = 180
+            this.max = 400
+            this.progress = 180
         }
         fineBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
