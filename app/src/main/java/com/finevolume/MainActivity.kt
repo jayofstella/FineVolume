@@ -10,13 +10,13 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.SeekBar
+import android.widget.ScrollView
 import android.widget.TextView
 
 class MainActivity : Activity() {
     private lateinit var audio: AudioManager
-    private lateinit var status: TextView
-    private lateinit var fineValue: TextView
+    private lateinit var summary: TextView
+    private lateinit var details: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,103 +34,155 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 10) refresh()
     }
 
     private fun buildUi() {
+        val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 60, 40, 40)
+            setPadding(36, 54, 36, 48)
         }
 
-        val title = TextView(this).apply {
-            text = "FineVolume v0.1.1"
+        root.addView(TextView(this).apply {
+            text = "FineVolume v0.1.2"
             textSize = 28f
-        }
-        val subtitle = TextView(this).apply {
-            text = "vivo / Android 15 蓝牙音频技术验证版"
+        })
+        root.addView(TextView(this).apply {
+            text = "OriginOS 5 / Android 15 深度音频诊断版"
             textSize = 15f
-            setPadding(0, 8, 0, 28)
-        }
-        status = TextView(this).apply { textSize = 16f }
-
-        val systemLabel = TextView(this).apply {
-            textSize = 17f
-            setPadding(0, 30, 0, 4)
-        }
-        val systemBar = SeekBar(this)
-        val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        systemBar.max = maxVolume
-        systemBar.progress = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        systemLabel.text = "系统媒体音量：${systemBar.progress} / $maxVolume"
-        systemBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) audio.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0)
-                systemLabel.text = "系统媒体音量：$progress / $maxVolume"
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            setPadding(0, 8, 0, 24)
         })
 
-        fineValue = TextView(this).apply {
-            text = "目标软件衰减：-18.0 dB"
-            textSize = 20f
-            setPadding(0, 30, 0, 4)
-        }
-        val fineBar = SeekBar(this).apply {
-            this.max = 400
-            this.progress = 180
-        }
-        fineBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                fineValue.text = "目标软件衰减：%.1f dB".format(-progress / 10.0)
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-        })
+        summary = TextView(this).apply { textSize = 16f }
+        root.addView(summary)
 
-        val refreshButton = Button(this).apply {
-            text = "重新检测蓝牙 / AudioEffect"
+        root.addView(Button(this).apply {
+            text = "重新扫描音频设备与 AudioEffect"
             setOnClickListener { refresh() }
-        }
-        val note = TextView(this).apply {
-            text = "\n重要：本版首先检测 OriginOS 5 暴露的音频能力。上面的 dB 滑块是目标值，尚不宣称已经对全局蓝牙音频实施衰减。请把检测结果截图发回。"
-            textSize = 14f
-        }
+        })
 
-        root.addView(title)
-        root.addView(subtitle)
-        root.addView(status)
-        root.addView(systemLabel)
-        root.addView(systemBar)
-        root.addView(fineValue)
-        root.addView(fineBar)
-        root.addView(refreshButton)
-        root.addView(note)
-        setContentView(root)
+        root.addView(TextView(this).apply {
+            text = "\n详细诊断结果"
+            textSize = 20f
+        })
+        details = TextView(this).apply {
+            textSize = 13f
+            setTextIsSelectable(true)
+        }
+        root.addView(details)
+
+        root.addView(TextView(this).apply {
+            text = "\n说明：本版只做能力探测，不会修改或接管系统音频。请在蓝牙耳机已连接且正在播放音乐/视频时运行扫描，并把详细结果截图发回。"
+            textSize = 14f
+        })
+
+        scroll.addView(root)
+        setContentView(scroll)
+    }
+
+    private fun deviceTypeName(type: Int): String = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "BUILTIN_EARPIECE"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "BUILTIN_SPEAKER"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WIRED_HEADSET"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "WIRED_HEADPHONES"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BLUETOOTH_SCO"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "BLUETOOTH_A2DP"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "USB_DEVICE"
+        AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB_ACCESSORY"
+        AudioDeviceInfo.TYPE_DOCK -> "DOCK"
+        AudioDeviceInfo.TYPE_HDMI -> "HDMI"
+        AudioDeviceInfo.TYPE_HDMI_ARC -> "HDMI_ARC"
+        AudioDeviceInfo.TYPE_IP -> "IP"
+        AudioDeviceInfo.TYPE_BUS -> "BUS"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB_HEADSET"
+        AudioDeviceInfo.TYPE_HEARING_AID -> "HEARING_AID"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE -> "BUILTIN_SPEAKER_SAFE"
+        AudioDeviceInfo.TYPE_REMOTE_SUBMIX -> "REMOTE_SUBMIX"
+        else -> if (Build.VERSION.SDK_INT >= 31) {
+            when (type) {
+                AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE_HEADSET"
+                AudioDeviceInfo.TYPE_BLE_SPEAKER -> "BLE_SPEAKER"
+                AudioDeviceInfo.TYPE_BLE_BROADCAST -> "BLE_BROADCAST"
+                else -> "TYPE_$type"
+            }
+        } else "TYPE_$type"
     }
 
     private fun refresh() {
         try {
             val outputs = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            val bluetooth = outputs.filter {
-                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                    (Build.VERSION.SDK_INT >= 31 && (it.type == AudioDeviceInfo.TYPE_BLE_HEADSET || it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER))
-            }
             val effects = AudioEffect.queryEffects() ?: emptyArray()
             val insertCount = effects.count { it.connectMode == AudioEffect.EFFECT_INSERT }
-            val postCount = if (Build.VERSION.SDK_INT >= 30) effects.count { it.connectMode == AudioEffect.EFFECT_POST_PROCESSING } else 0
-            val deviceText = if (bluetooth.isEmpty()) {
-                "未检测到蓝牙音频输出（请先连接耳机）"
-            } else {
-                bluetooth.joinToString("\n") { "• ${it.productName}  [type=${it.type}]" }
+            val postCount = if (Build.VERSION.SDK_INT >= 30) {
+                effects.count { it.connectMode == AudioEffect.EFFECT_POST_PROCESSING }
+            } else 0
+            val auxCount = effects.count { it.connectMode == AudioEffect.EFFECT_AUXILIARY }
+            val musicNow = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val musicMax = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+
+            val btOutputs = outputs.filter {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    (Build.VERSION.SDK_INT >= 31 && (
+                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
+                            it.type == AudioDeviceInfo.TYPE_BLE_BROADCAST
+                        ))
             }
-            status.text = "蓝牙输出：\n$deviceText\n\nAudioEffect 总数：${effects.size}\nINSERT：$insertCount\nPOST_PROCESSING：$postCount\nAndroid：${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n设备：${Build.MANUFACTURER} ${Build.MODEL}"
+
+            val btText = if (btOutputs.isEmpty()) {
+                "未检测到蓝牙输出"
+            } else {
+                btOutputs.joinToString("\n") {
+                    "• ${it.productName}  ${deviceTypeName(it.type)} [type=${it.type}, id=${it.id}]"
+                }
+            }
+
+            summary.text = "蓝牙输出：\n$btText\n\n" +
+                "系统媒体音量：$musicNow / $musicMax\n" +
+                "AudioEffect 总数：${effects.size}\n" +
+                "INSERT：$insertCount   AUXILIARY：$auxCount   POST_PROCESSING：$postCount\n" +
+                "Android：${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+                "设备：${Build.MANUFACTURER} ${Build.MODEL}\n"
+
+            val outText = buildString {
+                append("===== ALL OUTPUT DEVICES (${outputs.size}) =====\n")
+                outputs.forEachIndexed { index, d ->
+                    append("[$index] ${d.productName}\n")
+                    append("  type=${d.type} (${deviceTypeName(d.type)})  id=${d.id}\n")
+                    append("  sink=${d.isSink}  source=${d.isSource}\n")
+                    append("  sampleRates=${d.sampleRates.joinToString()}\n")
+                    append("  channelCounts=${d.channelCounts.joinToString()}\n\n")
+                }
+
+                append("===== AUDIO EFFECTS (${effects.size}) =====\n")
+                effects.forEachIndexed { index, e ->
+                    val suspicious = listOf(
+                        "gain", "volume", "loud", "dynamic", "compress", "limit",
+                        "equal", "vivo", "qti", "qualcomm", "dirac", "dts", "dolby"
+                    ).any { token ->
+                        e.name.contains(token, ignoreCase = true) ||
+                            e.implementor.contains(token, ignoreCase = true)
+                    }
+                    append(if (suspicious) "*** CANDIDATE ***\n" else "")
+                    append("[$index] ${e.name}\n")
+                    append("  implementor=${e.implementor}\n")
+                    append("  mode=${e.connectMode}\n")
+                    append("  type=${e.type}\n")
+                    append("  uuid=${e.uuid}\n\n")
+                }
+            }
+            details.text = outText
         } catch (e: Exception) {
-            status.text = "检测失败：${e.javaClass.simpleName}: ${e.message}"
+            summary.text = "检测失败：${e.javaClass.simpleName}: ${e.message}"
+            details.text = e.stackTraceToString()
         }
     }
 }
