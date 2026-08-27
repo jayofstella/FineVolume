@@ -32,18 +32,18 @@ class MainActivity : Activity() {
     private val userServiceArgs by lazy {
         Shizuku.UserServiceArgs(ComponentName(packageName, AvrcpUserService::class.java.name))
             .daemon(false)
-            .processNameSuffix("autotest")
+            .processNameSuffix("audioprobe")
             .debuggable(true)
-            .version(7)
+            .version(8)
     }
 
     private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             remote = service
-            refresh("测试 UserService 已连接")
+            refresh("Audio Probe UserService 已连接")
             if (pendingAutoRun) {
                 pendingAutoRun = false
-                runFullTest(true)
+                runFullTest()
             } else {
                 queryStatus()
             }
@@ -51,7 +51,7 @@ class MainActivity : Activity() {
 
         override fun onServiceDisconnected(name: ComponentName) {
             remote = null
-            refresh("测试 UserService 已断开")
+            refresh("Audio Probe UserService 已断开")
         }
     }
 
@@ -60,7 +60,7 @@ class MainActivity : Activity() {
         buildUi()
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
-        refresh("v0.6.0 已启动；等待一键测试")
+        refresh("v0.7.0 已启动；等待一键扫描")
     }
 
     private fun buildUi() {
@@ -71,11 +71,11 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.6.0"
+            text = "FineVolume v0.7.0"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "一键全自动蓝牙音量链路验证版 · Shizuku shell"
+            text = "Audio / Vivo AudioPolicy 一键控制路径扫描版 · Shizuku shell"
             textSize = 16f
             setPadding(0, 6, 0, 20)
         })
@@ -87,13 +87,13 @@ class MainActivity : Activity() {
         root.addView(status)
 
         runButton = Button(this).apply {
-            text = "一键完整测试并生成报告"
+            text = "一键扫描全部剩余音量控制路径并生成报告"
             setOnClickListener { startOneClickTest() }
         }
         root.addView(runButton)
 
         root.addView(Button(this).apply {
-            text = "只读取当前状态（不改音量）"
+            text = "只读取当前服务状态"
             setOnClickListener { queryStatus() }
         })
 
@@ -101,20 +101,18 @@ class MainActivity : Activity() {
             textSize = 13f
             setTextIsSelectable(true)
             setPadding(0, 18, 0, 20)
-            text = "测试前：连接蓝牙耳机、播放持续音乐，并把系统媒体音量放在约 7/15。\n\n然后只点一次“一键完整测试并生成报告”。"
+            text = "本版不再测试已经确认失败的 A2DP Profile Binder 回调。\n\n直接扫描 AudioService、AudioPolicy、vivoaudiopolicy 以及系统 shell 音频入口。"
         }
         root.addView(detail)
 
         root.addView(TextView(this).apply {
-            text = "本版会自动完成：\n" +
-                "1. 连接 Shizuku UserService；\n" +
-                "2. 检查 shell UID、关键权限和系统 Binder；\n" +
-                "3. 读取 bluetooth_manager 状态；\n" +
-                "4. 按 Android 15 的 3 参数 AIDL 格式请求 A2DP profile Binder；\n" +
-                "5. 收集 bluetooth_manager / audio / logcat 证据；\n" +
-                "6. 仅在 A2DP Binder 成功后，自动做 60→40→60 的安全 A/B 音量测试；\n" +
-                "7. 自动把完整报告保存到“下载/FineVolume”目录。\n\n" +
-                "如果 A2DP Binder 获取失败，程序不会发送任何音量命令。你只需要把生成的 txt 报告发回来，不用再逐项截图测试。"
+            text = "本次只需要一次测试：\n" +
+                "1. 保持 Shizuku 正在运行并已授权 FineVolume；\n" +
+                "2. 蓝牙耳机可以保持连接；\n" +
+                "3. 点上方“一键扫描”；\n" +
+                "4. 等待约 15～30 秒；\n" +
+                "5. 把自动生成的 FineVolume-TestReport-v0.7.0 txt 文件发回来。\n\n" +
+                "v0.7.0 不会发送任何改变耳机音量的 Binder 事务，只负责把剩余可行接口一次映射完整。"
             textSize = 14f
         })
 
@@ -131,7 +129,7 @@ class MainActivity : Activity() {
         status.text = "Shizuku Binder：${if (alive) "CONNECTED" else "NOT CONNECTED"}\n" +
             "Shizuku UID：$uid\n" +
             "FineVolume permission：$permission\n" +
-            "AutoTest UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
+            "Audio Probe UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
             "状态：$message\n"
     }
 
@@ -148,12 +146,12 @@ class MainActivity : Activity() {
         }
 
         runButton.isEnabled = false
-        detail.text = "正在启动一次性自动测试……\n\n首次连接 UserService 后会自动继续，不需要再点其它按钮。"
-        refresh("自动测试启动中")
+        detail.text = "正在启动 v0.7.0 一键扫描……\n\n不需要再点其它按钮。"
+        refresh("自动扫描启动中")
 
         val b = remote
         if (b != null && b.pingBinder()) {
-            runFullTest(true)
+            runFullTest()
             return
         }
 
@@ -168,25 +166,25 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun runFullTest(audibleTest: Boolean) {
+    private fun runFullTest() {
         val b = remote
         if (b == null || !b.pingBinder()) {
             runButton.isEnabled = true
-            detail.text = "UserService 未连接，自动测试无法继续。"
-            refresh("自动测试中止：UserService 未连接")
+            detail.text = "UserService 未连接，自动扫描无法继续。"
+            refresh("自动扫描中止：UserService 未连接")
             return
         }
 
-        detail.text = "自动测试正在运行。可能需要约 15～30 秒，请不要关闭 FineVolume。\n\n如果 A2DP Binder 成功，耳机音量可能短暂按 60→40→60 变化，然后恢复到测试基准。"
-        refresh("自动测试运行中")
+        detail.text = "正在扫描 AudioService / AudioPolicy / vivoaudiopolicy / shell 音频接口……\n\n预计 15～30 秒，请不要关闭 FineVolume。"
+        refresh("自动扫描运行中")
 
         Thread {
-            val result = transactRunAll(b, audibleTest)
+            val result = transactRunAll(b)
             val saved = saveReport(result)
             runOnUiThread {
                 detail.text = result + "\n\n===== REPORT FILE =====\n" + saved
                 runButton.isEnabled = true
-                refresh("自动测试完成；报告已生成")
+                refresh("v0.7.0 扫描完成；报告已生成")
             }
         }.start()
     }
@@ -194,7 +192,7 @@ class MainActivity : Activity() {
     private fun queryStatus() {
         val b = remote
         if (b == null || !b.pingBinder()) {
-            detail.text = "UserService 尚未连接。若需要测试，请直接点“一键完整测试并生成报告”。"
+            detail.text = "UserService 尚未连接。若需要扫描，请直接点“一键扫描全部剩余音量控制路径并生成报告”。"
             return
         }
         Thread {
@@ -206,11 +204,10 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun transactRunAll(binder: IBinder, audible: Boolean): String {
+    private fun transactRunAll(binder: IBinder): String {
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         return try {
-            data.writeInt(if (audible) 1 else 0)
             val ok = binder.transact(AvrcpUserService.TX_RUN_ALL, data, reply, 0)
             if (!ok) return "FAILED: TX_RUN_ALL Binder transact returned false"
             reply.readException()
@@ -239,7 +236,7 @@ class MainActivity : Activity() {
 
     private fun saveReport(report: String): String {
         return try {
-            val fileName = "FineVolume-TestReport-v0.6.0-${System.currentTimeMillis()}.txt"
+            val fileName = "FineVolume-TestReport-v0.7.0-${System.currentTimeMillis()}.txt"
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                 put(MediaStore.Downloads.MIME_TYPE, "text/plain")
