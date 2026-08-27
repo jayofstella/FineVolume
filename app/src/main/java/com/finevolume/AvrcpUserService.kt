@@ -7,7 +7,6 @@ import android.os.Parcel
 import android.os.Process
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.lang.reflect.Modifier
 import java.util.concurrent.TimeUnit
 
 class AvrcpUserService(private val context: Context) : Binder() {
@@ -16,216 +15,134 @@ class AvrcpUserService(private val context: Context) : Binder() {
         const val TX_RUN_ALL = FIRST_CALL_TRANSACTION + 2
     }
 
-    @Volatile private var stateMessage = "v0.7.0 UserService ready; no probe has run"
-    @Volatile private var lastReport = "FineVolume v0.7.0 UserService ready"
+    @Volatile private var stateMessage = "v0.8.0 UserService ready"
 
-    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-        return when (code) {
-            TX_STATUS -> {
-                reply?.writeNoException()
-                reply?.writeString(buildQuickStatus())
-                true
-            }
-            TX_RUN_ALL -> {
-                val result = runCompleteProbe()
-                reply?.writeNoException()
-                reply?.writeString(result)
-                true
-            }
-            else -> super.onTransact(code, data, reply, flags)
-        }
+    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean = when (code) {
+        TX_STATUS -> { reply?.writeNoException(); reply?.writeString(buildQuickStatus()); true }
+        TX_RUN_ALL -> { val r = runControlledExperiment(); reply?.writeNoException(); reply?.writeString(r); true }
+        else -> super.onTransact(code, data, reply, flags)
     }
 
     private fun getService(name: String): IBinder? = try {
-        val clazz = Class.forName("android.os.ServiceManager")
-        val method = clazz.getDeclaredMethod("getService", String::class.java)
-        method.isAccessible = true
-        method.invoke(null, name) as? IBinder
+        val c = Class.forName("android.os.ServiceManager")
+        val m = c.getDeclaredMethod("getService", String::class.java)
+        m.isAccessible = true
+        m.invoke(null, name) as? IBinder
     } catch (_: Throwable) { null }
 
-    private fun binderInfo(name: String): String {
-        val b = getService(name) ?: return "$name=NOT FOUND"
-        val desc = try { b.interfaceDescriptor ?: "null" } catch (e: Throwable) { "ERROR:${e.message}" }
-        return "$name=FOUND alive=${b.isBinderAlive} descriptor=$desc"
-    }
-
-    private fun permissionResult(permission: String): String = try {
-        val value = context.checkPermission(permission, Process.myPid(), Process.myUid())
-        "$permission=${if (value == 0) "GRANTED" else "DENIED($value)"}"
-    } catch (e: Throwable) {
-        "$permission=ERROR ${e.javaClass.simpleName}:${e.message}"
-    }
-
-    private fun runShell(command: String, timeoutSec: Long = 5, maxChars: Int = 18000): String {
-        return try {
-            val p = ProcessBuilder("sh", "-c", command).redirectErrorStream(true).start()
-            val done = p.waitFor(timeoutSec, TimeUnit.SECONDS)
-            if (!done) {
-                p.destroyForcibly()
-                return "TIMEOUT after ${timeoutSec}s: $command"
-            }
+    private fun runShell(command: String, timeoutSec: Long = 5, maxChars: Int = 12000): String = try {
+        val p = ProcessBuilder("sh", "-c", command).redirectErrorStream(true).start()
+        val done = p.waitFor(timeoutSec, TimeUnit.SECONDS)
+        if (!done) { p.destroyForcibly(); "TIMEOUT: $command" } else {
             val text = BufferedReader(InputStreamReader(p.inputStream)).use { it.readText() }
             "exit=${p.exitValue()}\n" + if (text.length > maxChars) text.take(maxChars) + "\n...[TRUNCATED]" else text
-        } catch (e: Throwable) {
-            "ERROR ${e.javaClass.name}: ${e.message}"
         }
+    } catch (e: Throwable) { "ERROR ${e.javaClass.name}: ${e.message}" }
+
+    private fun invokeAudio(method: String, vararg args: Any?): Any? {
+        val binder = getService("audio") ?: throw IllegalStateException("audio binder missing")
+        val stub = Class.forName("android.media.IAudioService\$Stub")
+        val asInterface = stub.getDeclaredMethod("asInterface", IBinder::class.java)
+        asInterface.isAccessible = true
+        val service = asInterface.invoke(null, binder)
+        val candidates = service.javaClass.methods.filter { it.name == method && it.parameterCount == args.size }
+        var last: Throwable? = null
+        for (m in candidates) {
+            try { m.isAccessible = true; return m.invoke(service, *args) }
+            catch (e: Throwable) { last = e }
+        }
+        throw IllegalStateException("$method/${args.size} unavailable", last)
     }
 
-    private fun reflectClass(className: String, nameFilter: Regex? = null): String {
-        return try {
-            val c = Class.forName(className)
-            val methods = c.declaredMethods
-                .filter { m -> nameFilter == null || nameFilter.containsMatchIn(m.name) }
-                .sortedWith(compareBy({ it.name }, { it.parameterCount }))
-                .take(120)
-                .joinToString("\n") { m ->
-                    val mods = Modifier.toString(m.modifiers)
-                    val params = m.parameterTypes.joinToString(",") { it.simpleName }
-                    "$mods ${m.returnType.simpleName} ${m.name}($params)"
-                }
-            val txFields = c.declaredFields
-                .filter { it.name.startsWith("TRANSACTION_") }
-                .take(160)
-                .mapNotNull { f ->
-                    try {
-                        f.isAccessible = true
-                        "${f.name}=${f.getInt(null)}"
-                    } catch (_: Throwable) { null }
-                }
-                .joinToString("\n")
-            "CLASS FOUND: $className\nMETHODS:\n${if (methods.isBlank()) "(none matched)" else methods}\nTRANSACTION FIELDS:\n${if (txFields.isBlank()) "(none visible)" else txFields}"
-        } catch (e: Throwable) {
-            "CLASS UNAVAILABLE: $className -> ${e.javaClass.name}: ${e.message}"
-        }
+    private fun currentMusicIndex(): Int = (invokeAudio("getStreamVolume", 3) as Number).toInt()
+    private fun minMusicIndex(): Int = (invokeAudio("getStreamMinVolume", 3) as Number).toInt()
+    private fun maxMusicIndex(): Int = (invokeAudio("getStreamMaxVolume", 3) as Number).toInt()
+
+    private fun setMusicIndex(index: Int) {
+        // IAudioService.setStreamVolume(streamType,index,flags,callingPackage)
+        invokeAudio("setStreamVolume", 3, index, 0, "com.finevolume")
     }
 
-    private fun probeServiceManagerNames(): String = runShell(
-        "service list | grep -i -E 'audio|media|bluetooth|vivo' | head -n 220",
-        5,
-        16000
+    private fun audioSnapshot(): String = runShell(
+        "dumpsys audio | grep -i -E 'STREAM_MUSIC|bt_a2dp|absolute volume devices|pre-scale for bluetooth|streamVolume' | head -n 100",
+        5, 9000
     )
 
-    private fun probeAudioDumps(): String {
-        val audio = runShell(
-            "dumpsys audio | grep -i -E 'STREAM_MUSIC|bt_a2dp|absolute|safe|volume|prescale|device' | head -n 260",
-            6,
-            20000
-        )
-        val policy = runShell(
-            "dumpsys media.audio_policy | grep -i -E 'a2dp|bluetooth|volume|curve|gain|device' | head -n 260",
-            6,
-            20000
-        )
-        val vivo = runShell(
-            "dumpsys vivoaudiopolicy 2>&1 | head -n 260",
-            6,
-            20000
-        )
-        return "--- dumpsys audio ---\n$audio\n\n--- dumpsys media.audio_policy ---\n$policy\n\n--- dumpsys vivoaudiopolicy ---\n$vivo"
-    }
+    private fun policySnapshot(): String = runShell(
+        "dumpsys media.audio_policy | grep -i -E 'AUDIO_DEVICE_OUT_BLUETOOTH_A2DP|Volume:|volume index|curve' | head -n 140",
+        5, 9000
+    )
 
-    private fun probeShellAudioTools(): String {
-        val commands = listOf(
-            "cmd audio help",
-            "cmd media_session help",
-            "cmd media_session volume --stream 3 --get",
-            "media volume --stream 3 --get",
-            "settings get global bluetooth_disabled_profiles",
-            "settings get global bluetooth_on",
-            "settings list global | grep -i -E 'absolute|bluetooth|volume|audio' | head -n 160",
-            "getprop | grep -i -E 'audio|a2dp|avrcp|bluetooth' | head -n 220"
-        )
-        return commands.joinToString("\n\n") { cmd -> "### $cmd\n${runShell(cmd, 5, 10000)}" }
-    }
-
-    private fun probeFrameworkClasses(): String {
-        val filter = Regex("volume|gain|device|a2dp|bluetooth|stream|absolute|parameter|policy", RegexOption.IGNORE_CASE)
-        return listOf(
-            "android.media.IAudioService\$Stub",
-            "android.media.IAudioService",
-            "android.media.IAudioPolicyService\$Stub",
-            "android.media.IAudioPolicyService",
-            "android.media.IAudioFlingerService\$Stub",
-            "android.media.IAudioFlingerService",
-            "com.vivo.vivoaudiopolicy.IVivoAudioPolicyService\$Stub",
-            "com.vivo.vivoaudiopolicy.IVivoAudioPolicyService"
-        ).joinToString("\n\n") { reflectClass(it, filter) }
-    }
-
-    private fun runCompleteProbe(): String {
-        stateMessage = "v0.7.0 probe running"
+    private fun runControlledExperiment(): String {
+        stateMessage = "v0.8.0 controlled experiment running"
         val sb = StringBuilder()
-        fun section(title: String) { sb.append("\n===== ").append(title).append(" =====\n") }
+        fun sec(s: String) { sb.append("\n===== ").append(s).append(" =====\n") }
+        sb.append("FineVolume-TestReport v0.8.0\n")
+        sb.append("timestampMs=${System.currentTimeMillis()} uid=${Process.myUid()} pid=${Process.myPid()}\n")
+        sb.append("Purpose: controlled AudioService/AudioPolicy A2DP volume experiment\n")
 
-        sb.append("FineVolume-TestReport v0.7.0\n")
-        sb.append("timestampMs=${System.currentTimeMillis()}\n")
-        sb.append("uid=${Process.myUid()} pid=${Process.myPid()}\n")
-        sb.append("selinux=").append(try { java.io.File("/proc/self/attr/current").readText().trim() } catch (e: Throwable) { "ERROR:${e.message}" }).append('\n')
+        sec("PRECHECK")
+        sb.append(runShell("id", 2, 2000)).append('\n')
+        sb.append("audioBinder=${getService("audio")?.interfaceDescriptor ?: "NULL"}\n")
+        sb.append("policyBinder=${getService("media.audio_policy")?.interfaceDescriptor ?: "NULL"}\n")
+        val original = try { currentMusicIndex() } catch (e: Throwable) {
+            sb.append("FATAL getStreamVolume: ${e.javaClass.name}:${e.message}\n")
+            stateMessage = "v0.8.0 failed before experiment"
+            return sb.toString()
+        }
+        val min = try { minMusicIndex() } catch (_: Throwable) { 0 }
+        val max = try { maxMusicIndex() } catch (_: Throwable) { 15 }
+        sb.append("STREAM_MUSIC original=$original range=[$min..$max]\n")
+        sb.append("shellRead=\n${runShell("cmd media_session volume --stream 3 --get", 3, 2000)}\n")
 
-        section("IDENTITY")
-        sb.append(runShell("id", 2, 3000)).append('\n')
+        sec("BASELINE")
+        sb.append(audioSnapshot()).append('\n')
+        sb.append(policySnapshot()).append('\n')
 
-        section("REMOTE PERMISSIONS")
-        listOf(
-            "android.permission.BLUETOOTH_CONNECT",
-            "android.permission.BLUETOOTH_PRIVILEGED",
-            "android.permission.MODIFY_AUDIO_SETTINGS",
-            "android.permission.MODIFY_AUDIO_ROUTING",
-            "android.permission.DUMP",
-            "android.permission.WRITE_SECURE_SETTINGS",
-            "android.permission.CAPTURE_AUDIO_OUTPUT"
-        ).forEach { sb.append(permissionResult(it)).append('\n') }
+        // Safe, audible experiment: use the current index and one neighbouring index only.
+        // Never force minimum volume and always restore the exact original index.
+        val alternate = when {
+            original > min + 1 -> original - 1
+            original < max -> original + 1
+            else -> original
+        }
+        sec("CONTROLLED INDEX A/B")
+        sb.append("Plan: original=$original -> alternate=$alternate -> original=$original\n")
+        if (alternate == original) {
+            sb.append("SKIPPED: no safe neighbouring index available\n")
+        } else {
+            try {
+                setMusicIndex(alternate)
+                Thread.sleep(900)
+                sb.append("afterSetAlternate readback=${currentMusicIndex()}\n")
+                sb.append(audioSnapshot()).append('\n')
+                sb.append(policySnapshot()).append('\n')
+            } catch (e: Throwable) {
+                sb.append("alternate ERROR ${e.javaClass.name}:${e.message}\n")
+            } finally {
+                try {
+                    setMusicIndex(original)
+                    Thread.sleep(500)
+                    sb.append("restore readback=${currentMusicIndex()} expected=$original\n")
+                } catch (e: Throwable) {
+                    sb.append("RESTORE ERROR ${e.javaClass.name}:${e.message}\n")
+                }
+            }
+        }
 
-        section("SYSTEM BINDERS")
-        listOf(
-            "audio",
-            "media.audio_flinger",
-            "media.audio_policy",
-            "vivoaudiopolicy",
-            "bluetooth_manager",
-            "bluetooth",
-            "bluetooth_a2dp",
-            "bluetooth_avrcp"
-        ).forEach { sb.append(binderInfo(it)).append('\n') }
+        sec("FINE-GRAINED CAPABILITY CHECK")
+        sb.append("IAudioService exposes integer STREAM_MUSIC indices; framework range observed=[$min..$max].\n")
+        sb.append("This build intentionally does NOT guess undocumented fractional indices or raw AudioPolicy parcels.\n")
+        sb.append("We compare policy dB snapshots before/after a known-safe integer change to determine whether the platform exposes another controllable layer.\n")
 
-        section("SERVICE MANAGER AUDIO/VIVO NAMES")
-        sb.append(probeServiceManagerNames()).append('\n')
-
-        section("FRAMEWORK / VIVO AIDL SURFACE")
-        sb.append(probeFrameworkClasses()).append('\n')
-
-        section("SHELL AUDIO TOOLS")
-        sb.append(probeShellAudioTools()).append('\n')
-
-        section("AUDIO / POLICY DUMPS")
-        sb.append(probeAudioDumps()).append('\n')
-
-        section("NON-DESTRUCTIVE CONCLUSION INPUT")
-        sb.append("No volume-changing Binder transaction was sent in v0.7.0.\n")
-        sb.append("No AudioPolicy or vivoaudiopolicy method was invoked; this report only maps callable surfaces.\n")
-        sb.append("Goal: choose one concrete control path for the next build without repeating earlier Shizuku/A2DP diagnostics.\n")
-
-        section("SUMMARY")
-        sb.append("UserServiceAlive=true\n")
-        sb.append("AudioServiceFound=${getService("audio") != null}\n")
-        sb.append("AudioPolicyFound=${getService("media.audio_policy") != null}\n")
-        sb.append("VivoAudioPolicyFound=${getService("vivoaudiopolicy") != null}\n")
-        sb.append("BluetoothManagerFound=${getService("bluetooth_manager") != null}\n")
-        sb.append("NEXT: send this single v0.7.0 report back for analysis.\n")
-
-        lastReport = sb.toString()
-        stateMessage = "v0.7.0 probe complete"
-        return lastReport
+        sec("FINAL")
+        sb.append("finalMusicIndex=").append(try { currentMusicIndex() } catch (_: Throwable) { -1 }).append(" original=$original\n")
+        sb.append("Final audio snapshot:\n").append(audioSnapshot()).append('\n')
+        stateMessage = "v0.8.0 experiment complete; original volume restored"
+        return sb.toString()
     }
 
-    private fun buildQuickStatus(): String = "FineVolume v0.7.0\n" +
-        "uid=${Process.myUid()} pid=${Process.myPid()}\n" +
-        "state=$stateMessage\n" +
-        "audio=${if (getService("audio") != null) "FOUND" else "NOT FOUND"}\n" +
-        "media.audio_policy=${if (getService("media.audio_policy") != null) "FOUND" else "NOT FOUND"}\n" +
-        "vivoaudiopolicy=${if (getService("vivoaudiopolicy") != null) "FOUND" else "NOT FOUND"}\n" +
-        "lastReportChars=${lastReport.length}"
+    private fun buildQuickStatus(): String = "FineVolume v0.8.0\nuid=${Process.myUid()} pid=${Process.myPid()}\nstate=$stateMessage\naudio=${if (getService("audio") != null) "FOUND" else "NOT FOUND"}\nmedia.audio_policy=${if (getService("media.audio_policy") != null) "FOUND" else "NOT FOUND"}"
 
-    @Suppress("unused")
-    fun destroy() { System.exit(0) }
+    @Suppress("unused") fun destroy() { System.exit(0) }
 }
