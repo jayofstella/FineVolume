@@ -48,18 +48,18 @@ class AvrcpUserService(private val context: Context) : Binder() {
         }
     }
 
-    override fun onTransact(code: Int, data: Parcel, reply: Parcel, flags: Int): Boolean {
+    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         return when (code) {
             TX_STATUS -> {
-                reply.writeNoException()
-                reply.writeString(buildStatus())
+                reply?.writeNoException()
+                reply?.writeString(buildStatus())
                 true
             }
             TX_SET_VOLUME -> {
                 val value = data.readInt().coerceIn(0, 127)
                 val result = setAbsoluteVolume(value)
-                reply.writeNoException()
-                reply.writeString(result)
+                reply?.writeNoException()
+                reply?.writeString(result)
                 true
             }
             else -> super.onTransact(code, data, reply, flags)
