@@ -2,11 +2,14 @@ package com.finevolume
 
 import android.app.Activity
 import android.content.ComponentName
+import android.content.ContentValues
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Environment
 import android.os.IBinder
 import android.os.Parcel
+import android.provider.MediaStore
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -16,7 +19,9 @@ import rikka.shizuku.Shizuku
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var detail: TextView
+    private lateinit var runButton: Button
     private var remote: IBinder? = null
+    @Volatile private var pendingAutoRun = false
 
     private val binderReceived = Shizuku.OnBinderReceivedListener { refresh("收到 Shizuku Binder") }
     private val binderDead = Shizuku.OnBinderDeadListener {
@@ -27,21 +32,26 @@ class MainActivity : Activity() {
     private val userServiceArgs by lazy {
         Shizuku.UserServiceArgs(ComponentName(packageName, AvrcpUserService::class.java.name))
             .daemon(false)
-            .processNameSuffix("avrcpctl")
+            .processNameSuffix("autotest")
             .debuggable(true)
-            .version(6)
+            .version(7)
     }
 
     private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             remote = service
-            refresh("AVRCP 控制 UserService 已连接")
-            queryStatus()
+            refresh("测试 UserService 已连接")
+            if (pendingAutoRun) {
+                pendingAutoRun = false
+                runFullTest(true)
+            } else {
+                queryStatus()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
             remote = null
-            refresh("AVRCP 控制 UserService 已断开")
+            refresh("测试 UserService 已断开")
         }
     }
 
@@ -50,8 +60,7 @@ class MainActivity : Activity() {
         buildUi()
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
-        refresh("v0.5.2 已启动")
-        rootBind()
+        refresh("v0.6.0 已启动；等待一键测试")
     }
 
     private fun buildUi() {
@@ -62,11 +71,11 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.5.2"
+            text = "FineVolume v0.6.0"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "Bluetooth AVRCP Direct-AIDL Binder 实控版 · Shizuku shell"
+            text = "一键全自动蓝牙音量链路验证版 · Shizuku shell"
             textSize = 16f
             setPadding(0, 6, 0, 20)
         })
@@ -77,65 +86,40 @@ class MainActivity : Activity() {
         }
         root.addView(status)
 
-        root.addView(Button(this).apply {
-            text = "重新连接并自动建立 A2DP Binder"
-            setOnClickListener { rootBind() }
-        })
+        runButton = Button(this).apply {
+            text = "一键完整测试并生成报告"
+            setOnClickListener { startOneClickTest() }
+        }
+        root.addView(runButton)
 
         root.addView(Button(this).apply {
-            text = "读取当前控制链路状态"
+            text = "只读取当前状态（不改音量）"
             setOnClickListener { queryStatus() }
-        })
-
-        root.addView(TextView(this).apply {
-            text = "\n中等音量实控测试（系统媒体音量建议 6～8/15）"
-            textSize = 17f
-        })
-        addButtonRow(root, listOf(60, 50, 40, 30))
-
-        root.addView(TextView(this).apply {
-            text = "\n超低音量精细测试（中段有效后再测试）"
-            textSize = 17f
-        })
-        addButtonRow(root, listOf(12, 8, 5, 3, 1))
-
-        root.addView(Button(this).apply {
-            text = "恢复到测试基准 60 / 127"
-            setOnClickListener { setVolume(60) }
         })
 
         detail = TextView(this).apply {
             textSize = 13f
             setTextIsSelectable(true)
             setPadding(0, 18, 0, 20)
-            text = "正在自动连接控制链路……"
+            text = "测试前：连接蓝牙耳机、播放持续音乐，并把系统媒体音量放在约 7/15。\n\n然后只点一次“一键完整测试并生成报告”。"
         }
         root.addView(detail)
 
         root.addView(TextView(this).apply {
-            text = "v0.5.2 不再依赖 vivo ROM 暴露隐藏 Stub/Proxy 类，而是按 Android 15 AIDL 的 Binder 事务格式直接连接：\n" +
-                "1. bluetooth_manager；\n" +
-                "2. A2DP profile Binder；\n" +
-                "3. AVRCP absolute-volume support；\n" +
-                "4. setAvrcpAbsoluteVolume 0～127。\n\n" +
-                "测试时连接蓝牙耳机并播放音乐，系统音量保持约 7/15。只有状态出现 A2DP binder=READY 后才测试 60、50、40、30；若有效，再测试 12、8、5、3、1。\n\n" +
-                "界面版本号、APK versionName 与内部诊断版本从本版起统一维护。"
+            text = "本版会自动完成：\n" +
+                "1. 连接 Shizuku UserService；\n" +
+                "2. 检查 shell UID、关键权限和系统 Binder；\n" +
+                "3. 读取 bluetooth_manager 状态；\n" +
+                "4. 按 Android 15 的 3 参数 AIDL 格式请求 A2DP profile Binder；\n" +
+                "5. 收集 bluetooth_manager / audio / logcat 证据；\n" +
+                "6. 仅在 A2DP Binder 成功后，自动做 60→40→60 的安全 A/B 音量测试；\n" +
+                "7. 自动把完整报告保存到“下载/FineVolume”目录。\n\n" +
+                "如果 A2DP Binder 获取失败，程序不会发送任何音量命令。你只需要把生成的 txt 报告发回来，不用再逐项截图测试。"
             textSize = 14f
         })
 
         scroll.addView(root)
         setContentView(scroll)
-    }
-
-    private fun addButtonRow(root: LinearLayout, values: List<Int>) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        values.forEach { value ->
-            row.addView(Button(this).apply {
-                text = value.toString()
-                setOnClickListener { setVolume(value) }
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        root.addView(row)
     }
 
     private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
@@ -147,63 +131,101 @@ class MainActivity : Activity() {
         status.text = "Shizuku Binder：${if (alive) "CONNECTED" else "NOT CONNECTED"}\n" +
             "Shizuku UID：$uid\n" +
             "FineVolume permission：$permission\n" +
-            "AVRCP UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
+            "AutoTest UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
             "状态：$message\n"
     }
 
-    private fun rootBind() {
+    private fun startOneClickTest() {
         if (!safePing()) {
-            refresh("Shizuku 未连接")
+            detail.text = "Shizuku 当前未连接。请先确认 Shizuku 主界面显示“正在运行”。"
+            refresh("无法开始：Shizuku 未连接")
             return
         }
         if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-            refresh("FineVolume 尚未获得 Shizuku 授权")
+            detail.text = "FineVolume 尚未获得 Shizuku 授权。"
+            refresh("无法开始：未授权")
             return
         }
+
+        runButton.isEnabled = false
+        detail.text = "正在启动一次性自动测试……\n\n首次连接 UserService 后会自动继续，不需要再点其它按钮。"
+        refresh("自动测试启动中")
+
+        val b = remote
+        if (b != null && b.pingBinder()) {
+            runFullTest(true)
+            return
+        }
+
+        pendingAutoRun = true
         try {
-            detail.text = "正在建立 bluetooth_manager → A2DP Binder 控制链……"
             Shizuku.bindUserService(userServiceArgs, userServiceConnection)
         } catch (e: Throwable) {
+            pendingAutoRun = false
+            runButton.isEnabled = true
             detail.text = "bindUserService ERROR: ${e.javaClass.name}: ${e.message}"
             refresh("UserService 启动失败")
         }
     }
 
+    private fun runFullTest(audibleTest: Boolean) {
+        val b = remote
+        if (b == null || !b.pingBinder()) {
+            runButton.isEnabled = true
+            detail.text = "UserService 未连接，自动测试无法继续。"
+            refresh("自动测试中止：UserService 未连接")
+            return
+        }
+
+        detail.text = "自动测试正在运行。可能需要约 15～30 秒，请不要关闭 FineVolume。\n\n如果 A2DP Binder 成功，耳机音量可能短暂按 60→40→60 变化，然后恢复到测试基准。"
+        refresh("自动测试运行中")
+
+        Thread {
+            val result = transactRunAll(b, audibleTest)
+            val saved = saveReport(result)
+            runOnUiThread {
+                detail.text = result + "\n\n===== REPORT FILE =====\n" + saved
+                runButton.isEnabled = true
+                refresh("自动测试完成；报告已生成")
+            }
+        }.start()
+    }
+
     private fun queryStatus() {
         val b = remote
         if (b == null || !b.pingBinder()) {
-            detail.text = "UserService 尚未连接。请点“重新连接”。"
+            detail.text = "UserService 尚未连接。若需要测试，请直接点“一键完整测试并生成报告”。"
             return
         }
         Thread {
-            val result = transactForString(b, AvrcpUserService.TX_STATUS, null)
+            val result = transactForString(b, AvrcpUserService.TX_STATUS)
             runOnUiThread {
                 detail.text = result
-                refresh("控制链路状态已读取")
+                refresh("状态已读取")
             }
         }.start()
     }
 
-    private fun setVolume(value: Int) {
-        val b = remote
-        if (b == null || !b.pingBinder()) {
-            detail.text = "UserService 尚未连接。请先重新连接。"
-            return
-        }
-        Thread {
-            val result = transactForString(b, AvrcpUserService.TX_SET_VOLUME, value)
-            runOnUiThread {
-                detail.text = "请求 AVRCP=$value/127\n\n$result"
-                refresh(if (result.startsWith("SUCCESS")) "AVRCP $value/127 调用成功" else "AVRCP $value/127 调用失败")
-            }
-        }.start()
-    }
-
-    private fun transactForString(binder: IBinder, code: Int, value: Int?): String {
+    private fun transactRunAll(binder: IBinder, audible: Boolean): String {
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         return try {
-            if (value != null) data.writeInt(value)
+            data.writeInt(if (audible) 1 else 0)
+            val ok = binder.transact(AvrcpUserService.TX_RUN_ALL, data, reply, 0)
+            if (!ok) return "FAILED: TX_RUN_ALL Binder transact returned false"
+            reply.readException()
+            reply.readString() ?: "FAILED: empty report"
+        } catch (e: Throwable) {
+            "FAILED: ${e.javaClass.name}: ${e.message}"
+        } finally {
+            data.recycle(); reply.recycle()
+        }
+    }
+
+    private fun transactForString(binder: IBinder, code: Int): String {
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        return try {
             val ok = binder.transact(code, data, reply, 0)
             if (!ok) return "FAILED: Binder transact returned false"
             reply.readException()
@@ -211,8 +233,27 @@ class MainActivity : Activity() {
         } catch (e: Throwable) {
             "FAILED: ${e.javaClass.name}: ${e.message}"
         } finally {
-            data.recycle()
-            reply.recycle()
+            data.recycle(); reply.recycle()
+        }
+    }
+
+    private fun saveReport(report: String): String {
+        return try {
+            val fileName = "FineVolume-TestReport-v0.6.0-${System.currentTimeMillis()}.txt"
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/FineVolume")
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return "报告生成失败：MediaStore insert 返回 null"
+            contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(report.toByteArray(Charsets.UTF_8))
+                out.flush()
+            } ?: return "报告生成失败：无法打开输出流"
+            "已保存：下载/FineVolume/$fileName\n请直接把这个 txt 文件发给我。"
+        } catch (e: Throwable) {
+            "报告保存失败：${e.javaClass.name}: ${e.message}\n你仍可长按上方报告文本复制发送。"
         }
     }
 
