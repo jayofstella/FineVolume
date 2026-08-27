@@ -11,8 +11,8 @@ android {
         applicationId = "com.finevolume"
         minSdk = 30
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.1"
+        versionCode = 11
+        versionName = "0.4.2"
     }
 
     compileOptions {
