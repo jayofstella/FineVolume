@@ -16,48 +16,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 import rikka.shizuku.Shizuku
 
-class MainActivity : Activity() {
-    private lateinit var status: TextView
-    private lateinit var detail: TextView
-    private lateinit var runButton: Button
-    private var remote: IBinder? = null
-    @Volatile private var pendingAutoRun = false
-
-    private val binderReceived = Shizuku.OnBinderReceivedListener { refresh("收到 Shizuku Binder") }
-    private val binderDead = Shizuku.OnBinderDeadListener { remote = null; refresh("Shizuku Binder 已断开") }
-    private val userServiceArgs by lazy { Shizuku.UserServiceArgs(ComponentName(packageName, AvrcpUserService::class.java.name)).daemon(false).processNameSuffix("audiocontrol").debuggable(true).version(9) }
-    private val userServiceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName, service: IBinder) { remote=service; refresh("Audio Control UserService 已连接"); if(pendingAutoRun){pendingAutoRun=false;runFullTest()}else queryStatus() }
-        override fun onServiceDisconnected(name: ComponentName) { remote=null; refresh("Audio Control UserService 已断开") }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); buildUi(); Shizuku.addBinderReceivedListenerSticky(binderReceived); Shizuku.addBinderDeadListener(binderDead); refresh("v0.8.0 已启动；等待一次控制实验") }
-    private fun buildUi() {
-        val scroll=ScrollView(this); val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(36,54,36,54)}
-        root.addView(TextView(this).apply{text="FineVolume v0.8.0";textSize=28f})
-        root.addView(TextView(this).apply{text="AudioService / AudioPolicy 实际控制实验版 · 自动恢复原音量";textSize=16f;setPadding(0,6,0,20)})
-        status=TextView(this).apply{textSize=15f;setTextIsSelectable(true)};root.addView(status)
-        runButton=Button(this).apply{text="一键执行安全 A/B 控制实验并生成报告";setOnClickListener{startOneClickTest()}};root.addView(runButton)
-        root.addView(Button(this).apply{text="只读取当前服务状态";setOnClickListener{queryStatus()}})
-        detail=TextView(this).apply{textSize=13f;setTextIsSelectable(true);setPadding(0,18,0,20);text="本版不再做大范围扫描。只验证已经由 v0.7.0 找到的 AudioService / AudioPolicy 控制链。"};root.addView(detail)
-        root.addView(TextView(this).apply{text="测试方式：\n1. 保持 Shizuku 正在运行；\n2. 连接蓝牙耳机并播放持续音乐；\n3. 建议系统媒体音量放在 5～8/15；\n4. 点一次上方按钮；\n5. 软件只在当前档位与相邻一档之间短暂切换，然后自动恢复原档位；\n6. 把 FineVolume-TestReport-v0.8.0 txt 发回来。";textSize=14f})
-        scroll.addView(root);setContentView(scroll)
-    }
-    private fun safePing()=try{Shizuku.pingBinder()}catch(_:Throwable){false}
-    private fun refresh(message:String){val alive=safePing();val uid=if(alive)try{Shizuku.getUid().toString()}catch(_:Throwable){"ERR"}else"N/A";val permission=if(alive)try{if(Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED)"GRANTED" else "DENIED"}catch(_:Throwable){"ERR"}else"N/A";status.text="Shizuku Binder：${if(alive)"CONNECTED" else "NOT CONNECTED"}\nShizuku UID：$uid\nFineVolume permission：$permission\nAudio Control UserService：${if(remote?.pingBinder()==true)"CONNECTED" else "NOT CONNECTED"}\n\n状态：$message\n"}
-    private fun startOneClickTest(){if(!safePing()){detail.text="Shizuku 当前未连接。";refresh("无法开始：Shizuku 未连接");return};if(Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED){detail.text="FineVolume 尚未获得 Shizuku 授权。";refresh("无法开始：未授权");return};runButton.isEnabled=false;detail.text="正在启动 v0.8.0 控制实验……完成后会自动恢复原音量。";refresh("控制实验启动中");val b=remote;if(b!=null&&b.pingBinder()){runFullTest();return};pendingAutoRun=true;try{Shizuku.bindUserService(userServiceArgs,userServiceConnection)}catch(e:Throwable){pendingAutoRun=false;runButton.isEnabled=true;detail.text="bindUserService ERROR: ${e.javaClass.name}: ${e.message}";refresh("UserService 启动失败")}}
-    private fun runFullTest(){val b=remote;if(b==null||!b.pingBinder()){runButton.isEnabled=true;detail.text="UserService 未连接。";refresh("实验中止");return};detail.text="正在执行当前音量 → 相邻一档 → 恢复当前音量，并记录 AudioPolicy 状态……";refresh("A/B 控制实验运行中");Thread{val result=transactForString(b,AvrcpUserService.TX_RUN_ALL);val saved=saveReport(result);runOnUiThread{detail.text=result+"\n\n===== REPORT FILE =====\n"+saved;runButton.isEnabled=true;refresh("v0.8.0 实验完成；原音量已尝试恢复")}}.start()}
-    private fun queryStatus(){val b=remote?:run{detail.text="UserService 尚未连接。直接点一键实验即可自动启动。";return};Thread{val r=transactForString(b,AvrcpUserService.TX_STATUS);runOnUiThread{detail.text=r;refresh("状态已读取")}}.start()}
-    private fun transactForString(binder:IBinder,code:Int):String{val data=Parcel.obtain();val reply=Parcel.obtain();return try{val ok=binder.transact(code,data,reply,0);if(!ok)return "FAILED: Binder transact returned false";reply.readException();reply.readString()?:"FAILED: empty result"}catch(e:Throwable){"FAILED: ${e.javaClass.name}: ${e.message}"}finally{data.recycle();reply.recycle()}}
-    private fun saveReport(report:String):String {
-        try {
-            val fileName="FineVolume-TestReport-v0.8.0-${System.currentTimeMillis()}.txt"
-            val values=ContentValues().apply{put(MediaStore.Downloads.DISPLAY_NAME,fileName);put(MediaStore.Downloads.MIME_TYPE,"text/plain");put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS+"/FineVolume")}
-            val uri=contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,values) ?: return "报告生成失败：MediaStore insert 返回 null"
-            val out=contentResolver.openOutputStream(uri) ?: return "报告生成失败：无法打开输出流"
-            out.use{it.write(report.toByteArray(Charsets.UTF_8));it.flush()}
-            return "已保存：下载/FineVolume/$fileName\n请把这个 txt 文件发回来。"
-        } catch(e:Throwable) { return "报告保存失败：${e.javaClass.name}: ${e.message}" }
-    }
-    override fun onDestroy(){Shizuku.removeBinderReceivedListener(binderReceived);Shizuku.removeBinderDeadListener(binderDead);super.onDestroy()}
-}
+class MainActivity:Activity(){private lateinit var status:TextView;private lateinit var detail:TextView;private lateinit var runButton:Button;private var remote:IBinder?=null;@Volatile private var pending=false
+private val received=Shizuku.OnBinderReceivedListener{refresh("收到 Shizuku Binder")};private val dead=Shizuku.OnBinderDeadListener{remote=null;refresh("Shizuku Binder 已断开")};private val args by lazy{Shizuku.UserServiceArgs(ComponentName(packageName,AvrcpUserService::class.java.name)).daemon(false).processNameSuffix("audiocontrol").debuggable(true).version(10)}
+private val conn=object:ServiceConnection{override fun onServiceConnected(n:ComponentName,b:IBinder){remote=b;refresh("Audio Control UserService 已连接");if(pending){pending=false;runProbe()}else query()};override fun onServiceDisconnected(n:ComponentName){remote=null;refresh("Audio Control UserService 已断开")}}
+override fun onCreate(b:Bundle?){super.onCreate(b);buildUi();Shizuku.addBinderReceivedListenerSticky(received);Shizuku.addBinderDeadListener(dead);refresh("v0.9.0 已启动")}
+private fun buildUi(){val s=ScrollView(this);val r=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(36,54,36,54)};r.addView(TextView(this).apply{text="FineVolume v0.9.0";textSize=28f});r.addView(TextView(this).apply{text="精细衰减能力探测版 · 本次不改变系统音量";textSize=16f;setPadding(0,6,0,20)});status=TextView(this).apply{textSize=15f;setTextIsSelectable(true)};r.addView(status);runButton=Button(this).apply{text="一键探测精细音量控制能力并生成报告";setOnClickListener{start()}};r.addView(runButton);r.addView(Button(this).apply{text="只读取当前服务状态";setOnClickListener{query()}});detail=TextView(this).apply{textSize=13f;setTextIsSelectable(true);setPadding(0,18,0,20);text="v0.8.0 已证明系统 0～15 A2DP 音量控制链可用。本版只寻找 0～15 之外的增益/衰减控制接口，不执行未知 Binder 写操作。"};r.addView(detail);r.addView(TextView(this).apply{text="测试：保持 Shizuku 运行并连接蓝牙耳机即可。点击一次探测按钮。本版不会执行 3→2→3，也不会改变当前媒体音量。完成后把 FineVolume-TestReport-v0.9.0 txt 发回来。";textSize=14f});s.addView(r);setContentView(s)}
+private fun ping()=try{Shizuku.pingBinder()}catch(_:Throwable){false};private fun refresh(m:String){val a=ping();val uid=if(a)try{Shizuku.getUid().toString()}catch(_:Throwable){"ERR"}else"N/A";val p=if(a)try{if(Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED)"GRANTED" else "DENIED"}catch(_:Throwable){"ERR"}else"N/A";status.text="Shizuku Binder：${if(a)"CONNECTED" else "NOT CONNECTED"}\nShizuku UID：$uid\nFineVolume permission：$p\nAudio Control UserService：${if(remote?.pingBinder()==true)"CONNECTED" else "NOT CONNECTED"}\n\n状态：$m\n"}
+private fun start(){if(!ping()){detail.text="Shizuku 当前未连接。";return};if(Shizuku.checkSelfPermission()!=PackageManager.PERMISSION_GRANTED){detail.text="FineVolume 尚未获得 Shizuku 授权。";return};runButton.isEnabled=false;val b=remote;if(b!=null&&b.pingBinder()){runProbe();return};pending=true;try{Shizuku.bindUserService(args,conn)}catch(e:Throwable){pending=false;runButton.isEnabled=true;detail.text="启动失败：${e.javaClass.name}: ${e.message}"}}
+private fun runProbe(){val b=remote;if(b==null||!b.pingBinder()){runButton.isEnabled=true;return};detail.text="正在读取 AudioService / AudioPolicy / AudioFlinger 可控接口……";Thread{val result=tx(b,AvrcpUserService.TX_RUN_ALL);val saved=save(result);runOnUiThread{detail.text=result+"\n\n"+saved;runButton.isEnabled=true;refresh("v0.9.0 探测完成；系统音量未改变")}}.start()}
+private fun query(){val b=remote?:run{detail.text="UserService 尚未连接；点一键探测即可自动启动。";return};Thread{val x=tx(b,AvrcpUserService.TX_STATUS);runOnUiThread{detail.text=x}}.start()}
+private fun tx(b:IBinder,c:Int):String{val d=Parcel.obtain();val r=Parcel.obtain();return try{if(!b.transact(c,d,r,0))return "FAILED transact";r.readException();r.readString()?:"FAILED empty"}catch(e:Throwable){"FAILED ${e.javaClass.name}: ${e.message}"}finally{d.recycle();r.recycle()}}
+private fun save(report:String):String{try{val n="FineVolume-TestReport-v0.9.0-${System.currentTimeMillis()}.txt";val v=ContentValues().apply{put(MediaStore.Downloads.DISPLAY_NAME,n);put(MediaStore.Downloads.MIME_TYPE,"text/plain");put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS+"/FineVolume")};val u=contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,v)?:return"报告保存失败";contentResolver.openOutputStream(u)?.use{it.write(report.toByteArray(Charsets.UTF_8))}?:return"报告保存失败";return"已保存：下载/FineVolume/$n"}catch(e:Throwable){return"报告保存失败：${e.message}"}}
+override fun onDestroy(){Shizuku.removeBinderReceivedListener(received);Shizuku.removeBinderDeadListener(dead);super.onDestroy()}}
