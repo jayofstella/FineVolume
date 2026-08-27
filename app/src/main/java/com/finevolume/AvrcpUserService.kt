@@ -29,7 +29,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                     reply?.writeString(PROFILE_DESC)
                     true
                 }
-                FIRST_CALL_TRANSACTION -> { // onServiceConnected(ComponentName, IBinder)
+                FIRST_CALL_TRANSACTION -> {
                     data.enforceInterface(PROFILE_DESC)
                     val component = try { data.readTypedObject(ComponentName.CREATOR) } catch (_: Throwable) { null }
                     val service = data.readStrongBinder()
@@ -38,7 +38,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                     reply?.writeNoException()
                     true
                 }
-                FIRST_CALL_TRANSACTION + 1 -> { // onServiceDisconnected(ComponentName)
+                FIRST_CALL_TRANSACTION + 1 -> {
                     data.enforceInterface(PROFILE_DESC)
                     val component = try { data.readTypedObject(ComponentName.CREATOR) } catch (_: Throwable) { null }
                     a2dpBinder = null
@@ -51,9 +51,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
         }
     }
 
-    init {
-        bindA2dpProfile()
-    }
+    init { bindA2dpProfile() }
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         return when (code) {
@@ -93,10 +91,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
             stateMessage = bindResult
             return
         }
-        val tx = transactionCode(
-            "android.bluetooth.IBluetoothManager\$Stub",
-            "TRANSACTION_bindBluetoothProfileService"
-        )
+        val tx = transactionCode("android.bluetooth.IBluetoothManager\$Stub", "TRANSACTION_bindBluetoothProfileService")
         if (tx == null) {
             bindResult = "FAILED: bindBluetoothProfileService transaction code unavailable"
             stateMessage = bindResult
@@ -106,7 +101,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         try {
-            data.writeInterfaceToken(manager.interfaceDescriptor)
+            data.writeInterfaceToken(manager.interfaceDescriptor ?: "android.bluetooth.IBluetoothManager")
             data.writeInt(PROFILE_A2DP)
             data.writeStrongBinder(profileCallback)
             val ok = manager.transact(tx, data, reply, 0)
@@ -187,8 +182,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                             stateMessage = "SUCCESS via reflected IBluetoothA2dp: $value/127"
                             return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP profile Binder -> IBluetoothA2dp.setAvrcpAbsoluteVolume(Int)\n${buildStatus()}"
                         }
-                        m.parameterCount == 2 && m.parameterTypes[0] == Int::class.javaPrimitiveType &&
-                            AttributionSource::class.java.isAssignableFrom(m.parameterTypes[1]) -> {
+                        m.parameterCount == 2 && m.parameterTypes[0] == Int::class.javaPrimitiveType && AttributionSource::class.java.isAssignableFrom(m.parameterTypes[1]) -> {
                             m.invoke(proxy, value, source)
                             stateMessage = "SUCCESS via reflected IBluetoothA2dp + AttributionSource: $value/127"
                             return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP profile Binder -> IBluetoothA2dp.setAvrcpAbsoluteVolume(Int, AttributionSource)\nsourceUid=${Process.myUid()} package=com.android.shell\n${buildStatus()}"
@@ -208,7 +202,5 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
     }
 
     @Suppress("unused")
-    fun destroy() {
-        System.exit(0)
-    }
+    fun destroy() { System.exit(0) }
 }
