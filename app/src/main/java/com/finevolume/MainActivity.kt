@@ -27,21 +27,21 @@ class MainActivity : Activity() {
     private val userServiceArgs by lazy {
         Shizuku.UserServiceArgs(ComponentName(packageName, AvrcpUserService::class.java.name))
             .daemon(false)
-            .processNameSuffix("btprobe")
+            .processNameSuffix("avrcpctl")
             .debuggable(true)
-            .version(2)
+            .version(5)
     }
 
     private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
             remote = service
-            refresh("Bluetooth Binder Probe UserService 已连接")
-            runProbe()
+            refresh("AVRCP 控制 UserService 已连接")
+            queryStatus()
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
             remote = null
-            refresh("Bluetooth Binder Probe UserService 已断开")
+            refresh("AVRCP 控制 UserService 已断开")
         }
     }
 
@@ -50,7 +50,8 @@ class MainActivity : Activity() {
         buildUi()
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
-        refresh("v0.4.2 已启动；本版不会修改蓝牙音量")
+        refresh("v0.5.0 已启动")
+        rootBind()
     }
 
     private fun buildUi() {
@@ -61,11 +62,11 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.4.2"
+            text = "FineVolume v0.5.0"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "Bluetooth System Service 直连诊断版 · Shizuku shell"
+            text = "Bluetooth AVRCP 多路径实控版 · Shizuku shell"
             textSize = 16f
             setPadding(0, 6, 0, 20)
         })
@@ -77,35 +78,66 @@ class MainActivity : Activity() {
         root.addView(status)
 
         root.addView(Button(this).apply {
-            text = "① 启动 / 连接 Bluetooth Binder Probe Service"
-            setOnClickListener { bindProbeService() }
+            text = "重新连接并自动建立 A2DP Binder"
+            setOnClickListener { rootBind() }
         })
 
         root.addView(Button(this).apply {
-            text = "② 读取系统 Bluetooth / Audio Binder 服务"
-            setOnClickListener { runProbe() }
+            text = "读取当前控制链路状态"
+            setOnClickListener { queryStatus() }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "\n中等音量实控测试（系统媒体音量建议 6～8/15）"
+            textSize = 17f
+        })
+
+        addButtonRow(root, listOf(60, 50, 40, 30))
+
+        root.addView(TextView(this).apply {
+            text = "\n超低音量精细测试（中段有效后再测试）"
+            textSize = 17f
+        })
+        addButtonRow(root, listOf(12, 8, 5, 3, 1))
+
+        root.addView(Button(this).apply {
+            text = "恢复到测试基准 60 / 127"
+            setOnClickListener { setVolume(60) }
         })
 
         detail = TextView(this).apply {
             textSize = 13f
             setTextIsSelectable(true)
             setPadding(0, 18, 0, 20)
-            text = "尚未运行系统 Binder 探测。"
+            text = "正在自动连接控制链路……"
         }
         root.addView(detail)
 
         root.addView(TextView(this).apply {
-            text = "本版目的：\n" +
-                "• 不再使用 BluetoothAdapter.getDefaultAdapter()。\n" +
-                "• 直接从 ServiceManager 查询 bluetooth_manager / bluetooth / bluetooth_a2dp / bluetooth_avrcp。\n" +
-                "• 同时读取 audio / AudioFlinger / AudioPolicy Binder，确认 shell UserService 能看到哪些系统服务。\n" +
-                "• 本版只读取，不发送 AVRCP 数值，也不会改变媒体音量。\n\n" +
-                "测试方法：保持 Shizuku 13.5.4 正在运行且 FineVolume 已授权，连接 Ola Friend 后点①。将完整结果截图发回。"
+            text = "这版不再要求重复做纯诊断。启动后会自动：\n" +
+                "1. 连接 Shizuku UserService；\n" +
+                "2. 直接访问 bluetooth_manager Binder；\n" +
+                "3. 请求 A2DP profile Binder；\n" +
+                "4. 找到 IBluetoothA2dp.setAvrcpAbsoluteVolume；\n" +
+                "5. 按钮直接发送 0～127 AVRCP 绝对音量。\n\n" +
+                "测试：连接蓝牙耳机并播放音乐，系统音量保持约 7/15。先依次点 60、50、40、30。若耳机实际音量连续下降，再试 12、8、5、3、1。\n\n" +
+                "每次点击后的详细结果会显示 SUCCESS/FAILED 和实际调用路径。"
             textSize = 14f
         })
 
         scroll.addView(root)
         setContentView(scroll)
+    }
+
+    private fun addButtonRow(root: LinearLayout, values: List<Int>) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        values.forEach { value ->
+            row.addView(Button(this).apply {
+                text = value.toString()
+                setOnClickListener { setVolume(value) }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(row)
     }
 
     private fun safePing(): Boolean = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
@@ -117,11 +149,11 @@ class MainActivity : Activity() {
         status.text = "Shizuku Binder：${if (alive) "CONNECTED" else "NOT CONNECTED"}\n" +
             "Shizuku UID：$uid\n" +
             "FineVolume permission：$permission\n" +
-            "Probe UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
+            "AVRCP UserService：${if (remote?.pingBinder() == true) "CONNECTED" else "NOT CONNECTED"}\n\n" +
             "状态：$message\n"
     }
 
-    private fun bindProbeService() {
+    private fun rootBind() {
         if (!safePing()) {
             refresh("Shizuku 未连接")
             return
@@ -131,41 +163,55 @@ class MainActivity : Activity() {
             return
         }
         try {
-            detail.text = "正在启动 shell UserService……"
-            refresh("正在启动 Bluetooth Binder Probe UserService")
+            detail.text = "正在建立 bluetooth_manager → A2DP Binder 控制链……"
             Shizuku.bindUserService(userServiceArgs, userServiceConnection)
         } catch (e: Throwable) {
             detail.text = "bindUserService ERROR: ${e.javaClass.name}: ${e.message}"
-            refresh("Probe UserService 启动失败")
+            refresh("UserService 启动失败")
         }
     }
 
-    private fun runProbe() {
+    private fun queryStatus() {
         val b = remote
         if (b == null || !b.pingBinder()) {
-            detail.text = "Probe UserService 尚未连接，请先点①。"
+            detail.text = "UserService 尚未连接。请点“重新连接”。"
             return
         }
-        detail.text = "正在读取系统 Binder 服务……"
         Thread {
-            val result = transactForString(b, AvrcpUserService.TX_PROBE)
+            val result = transactForString(b, AvrcpUserService.TX_STATUS, null)
             runOnUiThread {
                 detail.text = result
-                refresh("Bluetooth / Audio Binder 探测完成")
+                refresh("控制链路状态已读取")
             }
         }.start()
     }
 
-    private fun transactForString(binder: IBinder, code: Int): String {
+    private fun setVolume(value: Int) {
+        val b = remote
+        if (b == null || !b.pingBinder()) {
+            detail.text = "UserService 尚未连接。请先重新连接。"
+            return
+        }
+        Thread {
+            val result = transactForString(b, AvrcpUserService.TX_SET_VOLUME, value)
+            runOnUiThread {
+                detail.text = "请求 AVRCP=$value/127\n\n$result"
+                refresh(if (result.startsWith("SUCCESS")) "AVRCP $value/127 调用成功" else "AVRCP $value/127 调用失败")
+            }
+        }.start()
+    }
+
+    private fun transactForString(binder: IBinder, code: Int, value: Int?): String {
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         return try {
+            if (value != null) data.writeInt(value)
             val ok = binder.transact(code, data, reply, 0)
-            if (!ok) return "Binder transact returned false"
+            if (!ok) return "FAILED: Binder transact returned false"
             reply.readException()
-            reply.readString() ?: "(no result)"
+            reply.readString() ?: "FAILED: no result"
         } catch (e: Throwable) {
-            "ERROR ${e.javaClass.name}: ${e.message}"
+            "FAILED: ${e.javaClass.name}: ${e.message}"
         } finally {
             data.recycle()
             reply.recycle()
