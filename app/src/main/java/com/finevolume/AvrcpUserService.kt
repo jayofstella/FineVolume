@@ -1,119 +1,110 @@
 package com.finevolume
 
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Binder
+import android.os.IBinder
 import android.os.Parcel
 
-class AvrcpUserService(private val context: Context) : Binder() {
+class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Context) : Binder() {
     companion object {
-        const val TX_STATUS = FIRST_CALL_TRANSACTION + 1
-        const val TX_SET_VOLUME = FIRST_CALL_TRANSACTION + 2
-    }
-
-    @Volatile
-    private var a2dpProxy: BluetoothProfile? = null
-
-    @Volatile
-    private var stateMessage: String = "initializing"
-
-    private val profileListener = object : BluetoothProfile.ServiceListener {
-        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-            if (profile == BluetoothProfile.A2DP) {
-                a2dpProxy = proxy
-                stateMessage = "A2DP proxy ready"
-            }
-        }
-
-        override fun onServiceDisconnected(profile: Int) {
-            if (profile == BluetoothProfile.A2DP) {
-                a2dpProxy = null
-                stateMessage = "A2DP proxy disconnected"
-            }
-        }
-    }
-
-    init {
-        try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            if (adapter == null) {
-                stateMessage = "BluetoothAdapter=null"
-            } else {
-                val requested = adapter.getProfileProxy(context, profileListener, BluetoothProfile.A2DP)
-                stateMessage = if (requested) "A2DP proxy requested; waiting callback" else "getProfileProxy returned false"
-            }
-        } catch (e: Throwable) {
-            stateMessage = "init ERROR ${e.javaClass.name}: ${e.message}"
-        }
+        const val TX_PROBE = FIRST_CALL_TRANSACTION + 1
     }
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         return when (code) {
-            TX_STATUS -> {
+            TX_PROBE -> {
                 reply?.writeNoException()
-                reply?.writeString(buildStatus())
-                true
-            }
-            TX_SET_VOLUME -> {
-                val value = data.readInt().coerceIn(0, 127)
-                val result = setAbsoluteVolume(value)
-                reply?.writeNoException()
-                reply?.writeString(result)
+                reply?.writeString(probeBluetoothServices())
                 true
             }
             else -> super.onTransact(code, data, reply, flags)
         }
     }
 
-    private fun buildStatus(): String {
-        val adapter = try { BluetoothAdapter.getDefaultAdapter() } catch (_: Throwable) { null }
-        val proxy = a2dpProxy
-        val devices = try {
-            proxy?.connectedDevices?.joinToString { d ->
-                try { d.name ?: d.address } catch (_: Throwable) { d.address }
-            } ?: "(proxy not ready)"
+    private fun getService(name: String): IBinder? {
+        return try {
+            val clazz = Class.forName("android.os.ServiceManager")
+            val method = clazz.getDeclaredMethod("getService", String::class.java)
+            method.isAccessible = true
+            method.invoke(null, name) as? IBinder
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun listServices(): List<String> {
+        return try {
+            val clazz = Class.forName("android.os.ServiceManager")
+            val method = clazz.getDeclaredMethod("listServices")
+            method.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            (method.invoke(null) as? Array<String>)?.toList().orEmpty()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun binderInfo(name: String): String {
+        val binder = getService(name)
+            ?: return "$name: NOT FOUND"
+        val descriptor = try {
+            binder.interfaceDescriptor
         } catch (e: Throwable) {
             "ERROR ${e.javaClass.simpleName}: ${e.message}"
         }
-        val methodState = try {
-            proxy?.javaClass?.getDeclaredMethod("setAvrcpAbsoluteVolume", Int::class.javaPrimitiveType)
-            "AVAILABLE"
-        } catch (e: Throwable) {
-            "NOT FOUND (${e.javaClass.simpleName})"
-        }
-        return "UserService uid=${android.os.Process.myUid()}\n" +
-            "Bluetooth enabled=${adapter?.isEnabled}\n" +
-            "state=$stateMessage\n" +
-            "A2DP proxy=${proxy?.javaClass?.name ?: "null"}\n" +
-            "connectedDevices=$devices\n" +
-            "hidden setAvrcpAbsoluteVolume=$methodState"
+        val alive = try { binder.pingBinder() } catch (_: Throwable) { false }
+        return "$name: FOUND\n  binder=${binder.javaClass.name}\n  alive=$alive\n  descriptor=$descriptor"
     }
 
-    private fun setAbsoluteVolume(value: Int): String {
-        val proxy = a2dpProxy ?: return "FAILED: A2DP proxy not ready\n${buildStatus()}"
+    private fun probeBluetoothServices(): String {
+        val sb = StringBuilder()
+        sb.append("===== FineVolume v0.4.2 Bluetooth Binder Probe =====\n")
+        sb.append("uid=${android.os.Process.myUid()} pid=${android.os.Process.myPid()}\n")
+        sb.append("SELinux context: ")
+        sb.append(readProcAttrCurrent()).append("\n\n")
+
+        val names = listOf(
+            "bluetooth_manager",
+            "bluetooth",
+            "bluetooth_a2dp",
+            "bluetooth_avrcp",
+            "audio",
+            "media.audio_flinger",
+            "media.audio_policy"
+        )
+        for (name in names) {
+            sb.append(binderInfo(name)).append("\n\n")
+        }
+
+        val all = listServices()
+        sb.append("===== ServiceManager names containing bluetooth / audio =====\n")
+        if (all.isEmpty()) {
+            sb.append("listServices unavailable or returned empty\n")
+        } else {
+            all.filter {
+                it.contains("bluetooth", ignoreCase = true) ||
+                    it.contains("audio", ignoreCase = true)
+            }.sorted().forEach { sb.append(it).append('\n') }
+        }
+
+        sb.append("\nInterpretation:\n")
+        sb.append("• bluetooth_manager FOUND + descriptor readable: next step can call manager Binder directly.\n")
+        sb.append("• bluetooth FOUND: direct adapter Binder is exposed to this shell process.\n")
+        sb.append("• bluetooth_a2dp / bluetooth_avrcp FOUND: profile service can potentially be called without BluetoothAdapter.\n")
+        sb.append("• This build does not send any volume command.\n")
+        return sb.toString()
+    }
+
+    private fun readProcAttrCurrent(): String {
         return try {
-            val method = proxy.javaClass.getDeclaredMethod("setAvrcpAbsoluteVolume", Int::class.javaPrimitiveType)
-            method.isAccessible = true
-            method.invoke(proxy, value)
-            stateMessage = "setAvrcpAbsoluteVolume($value) invoked"
-            "SUCCESS: setAvrcpAbsoluteVolume($value) invoked as uid=${android.os.Process.myUid()}\n${buildStatus()}"
+            java.io.File("/proc/self/attr/current").readText().trim()
         } catch (e: Throwable) {
-            val root = e.cause ?: e
-            stateMessage = "set volume failed: ${root.javaClass.simpleName}: ${root.message}"
-            "FAILED: ${root.javaClass.name}: ${root.message}\n${buildStatus()}"
+            "ERROR ${e.javaClass.simpleName}: ${e.message}"
         }
     }
 
     @Suppress("unused")
     fun destroy() {
-        try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            val proxy = a2dpProxy
-            if (adapter != null && proxy != null) adapter.closeProfileProxy(BluetoothProfile.A2DP, proxy)
-        } catch (_: Throwable) {
-        }
-        a2dpProxy = null
         System.exit(0)
     }
 }
