@@ -14,6 +14,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
         const val TX_SET_VOLUME = FIRST_CALL_TRANSACTION + 2
         private const val PROFILE_A2DP = 2
         private const val PROFILE_DESC = "android.bluetooth.IBluetoothProfileServiceConnection"
+        private const val A2DP_SERVICE_NAME = "android.bluetooth.IBluetoothA2dp"
     }
 
     @Volatile private var a2dpBinder: IBinder? = null
@@ -34,7 +35,11 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                     val component = try { data.readTypedObject(ComponentName.CREATOR) } catch (_: Throwable) { null }
                     val service = data.readStrongBinder()
                     a2dpBinder = service
-                    stateMessage = "A2DP profile connected: ${component?.flattenToShortString() ?: "unknown"}"
+                    stateMessage = if (service != null) {
+                        "A2DP profile connected: ${component?.flattenToShortString() ?: "unknown"}"
+                    } else {
+                        "A2DP callback received but binder=null"
+                    }
                     reply?.writeNoException()
                     true
                 }
@@ -85,43 +90,91 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
     } catch (_: Throwable) { null }
 
     private fun bindA2dpProfile() {
-        val manager = getService("bluetooth_manager")
-        if (manager == null) {
+        if (a2dpBinder != null) return
+        val managerBinder = getService("bluetooth_manager")
+        if (managerBinder == null) {
             bindResult = "FAILED: bluetooth_manager not found"
             stateMessage = bindResult
             return
         }
-        val tx = transactionCode("android.bluetooth.IBluetoothManager\$Stub", "TRANSACTION_bindBluetoothProfileService")
-        if (tx == null) {
-            bindResult = "FAILED: bindBluetoothProfileService transaction code unavailable"
-            stateMessage = bindResult
-            return
-        }
 
-        val data = Parcel.obtain()
-        val reply = Parcel.obtain()
+        val errors = mutableListOf<String>()
+
+        // Preferred path: use the real hidden IBluetoothManager proxy and discover the
+        // device's actual bindBluetoothProfileService overload. Android 14/15 commonly
+        // uses (int profile, String serviceName, IBluetoothProfileServiceConnection).
         try {
-            data.writeInterfaceToken(manager.interfaceDescriptor ?: "android.bluetooth.IBluetoothManager")
-            data.writeInt(PROFILE_A2DP)
-            data.writeStrongBinder(profileCallback)
-            val ok = manager.transact(tx, data, reply, 0)
-            if (!ok) {
-                bindResult = "FAILED: manager transact returned false (tx=$tx)"
-                stateMessage = bindResult
-                return
+            val managerStub = Class.forName("android.bluetooth.IBluetoothManager\$Stub")
+            val managerAsInterface = managerStub.getDeclaredMethod("asInterface", IBinder::class.java).apply { isAccessible = true }
+            val managerProxy = managerAsInterface.invoke(null, managerBinder)
+
+            val connectionStub = Class.forName("android.bluetooth.IBluetoothProfileServiceConnection\$Stub")
+            val connectionAsInterface = connectionStub.getDeclaredMethod("asInterface", IBinder::class.java).apply { isAccessible = true }
+            val connectionProxy = connectionAsInterface.invoke(null, profileCallback)
+
+            val methods = managerProxy.javaClass.methods
+                .filter { it.name == "bindBluetoothProfileService" }
+                .sortedByDescending { it.parameterCount }
+
+            for (m in methods) {
+                try {
+                    m.isAccessible = true
+                    val result = when (m.parameterCount) {
+                        3 -> m.invoke(managerProxy, PROFILE_A2DP, A2DP_SERVICE_NAME, connectionProxy)
+                        2 -> m.invoke(managerProxy, PROFILE_A2DP, connectionProxy)
+                        else -> continue
+                    }
+                    val accepted = result as? Boolean ?: true
+                    bindResult = "REFLECTION ${m.parameterCount}-arg bind accepted=$accepted signature=${m.parameterTypes.joinToString { it.simpleName }}"
+                    stateMessage = if (accepted) "A2DP bind accepted; waiting callback" else "A2DP bind rejected"
+                    if (accepted) return
+                } catch (e: Throwable) {
+                    val root = e.cause ?: e
+                    errors += "reflection ${m.parameterCount}-arg: ${root.javaClass.simpleName}: ${root.message}"
+                }
             }
-            reply.readException()
-            val accepted = try { reply.readBoolean() } catch (_: Throwable) { reply.readInt() != 0 }
-            bindResult = "bindBluetoothProfileService(A2DP) accepted=$accepted tx=$tx"
-            stateMessage = if (accepted) "A2DP bind accepted; waiting profile callback" else "A2DP bind rejected"
+            if (methods.isEmpty()) errors += "reflection: no bindBluetoothProfileService method"
         } catch (e: Throwable) {
             val root = e.cause ?: e
-            bindResult = "FAILED ${root.javaClass.name}: ${root.message}"
-            stateMessage = bindResult
-        } finally {
-            data.recycle()
-            reply.recycle()
+            errors += "reflection setup: ${root.javaClass.simpleName}: ${root.message}"
         }
+
+        // Fallback path: raw Binder transaction. Try modern 3-arg layout first,
+        // then legacy 2-arg layout. This also covers vendor framework variations.
+        val tx = transactionCode("android.bluetooth.IBluetoothManager\$Stub", "TRANSACTION_bindBluetoothProfileService")
+        if (tx != null) {
+            for (modern in listOf(true, false)) {
+                val data = Parcel.obtain()
+                val reply = Parcel.obtain()
+                try {
+                    data.writeInterfaceToken(managerBinder.interfaceDescriptor ?: "android.bluetooth.IBluetoothManager")
+                    data.writeInt(PROFILE_A2DP)
+                    if (modern) data.writeString(A2DP_SERVICE_NAME)
+                    data.writeStrongBinder(profileCallback)
+                    val ok = managerBinder.transact(tx, data, reply, 0)
+                    if (!ok) {
+                        errors += "raw ${if (modern) "3" else "2"}-arg: transact=false"
+                        continue
+                    }
+                    reply.readException()
+                    val accepted = try { reply.readBoolean() } catch (_: Throwable) { try { reply.readInt() != 0 } catch (_: Throwable) { true } }
+                    bindResult = "RAW ${if (modern) "3" else "2"}-arg bind accepted=$accepted tx=$tx"
+                    stateMessage = if (accepted) "A2DP bind accepted; waiting callback" else "A2DP bind rejected"
+                    if (accepted) return
+                } catch (e: Throwable) {
+                    val root = e.cause ?: e
+                    errors += "raw ${if (modern) "3" else "2"}-arg: ${root.javaClass.simpleName}: ${root.message}"
+                } finally {
+                    data.recycle()
+                    reply.recycle()
+                }
+            }
+        } else {
+            errors += "raw: transaction code unavailable"
+        }
+
+        bindResult = "FAILED all bind paths: ${errors.joinToString(" | ")}"
+        stateMessage = bindResult
     }
 
     private fun buildStatus(): String {
@@ -144,7 +197,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                 "A2DP reflection ERROR ${e.javaClass.simpleName}: ${e.message}"
             }
         }
-        return "FineVolume v0.5.0 multi-path controller\n" +
+        return "FineVolume v0.5.1 Android15 profile-bind fix\n" +
             "uid=${Process.myUid()} pid=${Process.myPid()}\n" +
             "bluetooth_manager=${if (manager != null) "FOUND" else "NOT FOUND"}\n" +
             "bindResult=$bindResult\n" +
@@ -154,12 +207,18 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
             "method=$methodInfo"
     }
 
-    private fun setAbsoluteVolume(value: Int): String {
-        if (a2dpBinder == null) {
-            bindA2dpProfile()
-            Thread.sleep(250)
+    private fun waitForA2dp(timeoutMs: Long): IBinder? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            a2dpBinder?.let { return it }
+            Thread.sleep(100)
         }
-        val binder = a2dpBinder ?: return "FAILED: A2DP binder not ready\n${buildStatus()}"
+        return a2dpBinder
+    }
+
+    private fun setAbsoluteVolume(value: Int): String {
+        if (a2dpBinder == null) bindA2dpProfile()
+        val binder = waitForA2dp(2500) ?: return "FAILED: A2DP binder not ready after 2.5s\n${buildStatus()}"
         return try {
             val stub = Class.forName("android.bluetooth.IBluetoothA2dp\$Stub")
             val asInterface = stub.getDeclaredMethod("asInterface", IBinder::class.java).apply { isAccessible = true }
@@ -179,13 +238,13 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                     when {
                         m.parameterCount == 1 && m.parameterTypes[0] == Int::class.javaPrimitiveType -> {
                             m.invoke(proxy, value)
-                            stateMessage = "SUCCESS via reflected IBluetoothA2dp: $value/127"
-                            return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP profile Binder -> IBluetoothA2dp.setAvrcpAbsoluteVolume(Int)\n${buildStatus()}"
+                            stateMessage = "SUCCESS AVRCP $value/127"
+                            return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP Binder -> setAvrcpAbsoluteVolume(Int)\n${buildStatus()}"
                         }
                         m.parameterCount == 2 && m.parameterTypes[0] == Int::class.javaPrimitiveType && AttributionSource::class.java.isAssignableFrom(m.parameterTypes[1]) -> {
                             m.invoke(proxy, value, source)
-                            stateMessage = "SUCCESS via reflected IBluetoothA2dp + AttributionSource: $value/127"
-                            return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP profile Binder -> IBluetoothA2dp.setAvrcpAbsoluteVolume(Int, AttributionSource)\nsourceUid=${Process.myUid()} package=com.android.shell\n${buildStatus()}"
+                            stateMessage = "SUCCESS AVRCP $value/127"
+                            return "SUCCESS: AVRCP=$value/127\npath=bluetooth_manager -> A2DP Binder -> setAvrcpAbsoluteVolume(Int, AttributionSource)\n${buildStatus()}"
                         }
                     }
                 } catch (e: Throwable) {
@@ -193,7 +252,7 @@ class AvrcpUserService(@Suppress("UNUSED_PARAMETER") private val context: Contex
                 }
             }
             val err = lastError
-            "FAILED: no callable overload${if (err != null) "\n${err.javaClass.name}: ${err.message}" else ""}\n${buildStatus()}"
+            "FAILED: no callable AVRCP overload${if (err != null) "\n${err.javaClass.name}: ${err.message}" else ""}\n${buildStatus()}"
         } catch (e: Throwable) {
             val root = e.cause ?: e
             stateMessage = "FAILED ${root.javaClass.simpleName}: ${root.message}"
