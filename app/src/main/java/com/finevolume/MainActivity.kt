@@ -29,7 +29,7 @@ class MainActivity : Activity() {
             .daemon(false)
             .processNameSuffix("avrcpctl")
             .debuggable(true)
-            .version(5)
+            .version(6)
     }
 
     private val userServiceConnection = object : ServiceConnection {
@@ -50,7 +50,7 @@ class MainActivity : Activity() {
         buildUi()
         Shizuku.addBinderReceivedListenerSticky(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
-        refresh("v0.5.0 已启动")
+        refresh("v0.5.2 已启动")
         rootBind()
     }
 
@@ -62,11 +62,11 @@ class MainActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "FineVolume v0.5.0"
+            text = "FineVolume v0.5.2"
             textSize = 28f
         })
         root.addView(TextView(this).apply {
-            text = "Bluetooth AVRCP 多路径实控版 · Shizuku shell"
+            text = "Bluetooth AVRCP Direct-AIDL Binder 实控版 · Shizuku shell"
             textSize = 16f
             setPadding(0, 6, 0, 20)
         })
@@ -91,7 +91,6 @@ class MainActivity : Activity() {
             text = "\n中等音量实控测试（系统媒体音量建议 6～8/15）"
             textSize = 17f
         })
-
         addButtonRow(root, listOf(60, 50, 40, 30))
 
         root.addView(TextView(this).apply {
@@ -114,14 +113,13 @@ class MainActivity : Activity() {
         root.addView(detail)
 
         root.addView(TextView(this).apply {
-            text = "这版不再要求重复做纯诊断。启动后会自动：\n" +
-                "1. 连接 Shizuku UserService；\n" +
-                "2. 直接访问 bluetooth_manager Binder；\n" +
-                "3. 请求 A2DP profile Binder；\n" +
-                "4. 找到 IBluetoothA2dp.setAvrcpAbsoluteVolume；\n" +
-                "5. 按钮直接发送 0～127 AVRCP 绝对音量。\n\n" +
-                "测试：连接蓝牙耳机并播放音乐，系统音量保持约 7/15。先依次点 60、50、40、30。若耳机实际音量连续下降，再试 12、8、5、3、1。\n\n" +
-                "每次点击后的详细结果会显示 SUCCESS/FAILED 和实际调用路径。"
+            text = "v0.5.2 不再依赖 vivo ROM 暴露隐藏 Stub/Proxy 类，而是按 Android 15 AIDL 的 Binder 事务格式直接连接：\n" +
+                "1. bluetooth_manager；\n" +
+                "2. A2DP profile Binder；\n" +
+                "3. AVRCP absolute-volume support；\n" +
+                "4. setAvrcpAbsoluteVolume 0～127。\n\n" +
+                "测试时连接蓝牙耳机并播放音乐，系统音量保持约 7/15。只有状态出现 A2DP binder=READY 后才测试 60、50、40、30；若有效，再测试 12、8、5、3、1。\n\n" +
+                "界面版本号、APK versionName 与内部诊断版本从本版起统一维护。"
             textSize = 14f
         })
 
