@@ -1,16 +1,13 @@
 name: Build FineVolume APK
-
 on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,10 +23,10 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk FineVolume-v0.9.0-debug.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk FineVolume-v0.10.0-debug.apk
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: FineVolume-v0.9.0-debug-apk
-          path: FineVolume-v0.9.0-debug.apk
+          name: FineVolume-v0.10.0-debug-apk
+          path: FineVolume-v0.10.0-debug.apk
           if-no-files-found: error
